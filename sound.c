@@ -35,6 +35,7 @@
 #include "options.h"
 #include "settings.h"
 #include "sound.h"
+#include "fuse_rpc.h"
 #include "tape.h"
 #include "timer/timer.h"
 #include "ui/ui.h"
@@ -69,6 +70,7 @@ static void sound_update_source_routes( void );
 libspectrum_dword
 sound_get_effective_processor_speed( void )
 {
+  if( pyro_rpc_audio_enabled ) return machine_current->timings.processor_speed;
   return machine_current->timings.processor_speed / 100 * 
            settings_current.emulation_speed;
 }
@@ -104,6 +106,7 @@ sound_init_buffer( Blip_Buffer **buf )
 static int
 is_in_sound_enabled_range( void )
 {
+  if( pyro_rpc_audio_enabled ) return 1;
   return settings_current.emulation_speed >= MIN_SPEED_PERCENTAGE &&
     settings_current.emulation_speed <= MAX_SPEED_PERCENTAGE;
 }
@@ -306,6 +309,7 @@ sound_frame( void )
   output_mixer_end_frame( machine_current->timings.tstates_per_frame,
                           samples, count );
 
+  if( pyro_rpc_audio_enabled ) pyro_rpc_audio_pcm(samples, (unsigned)count, (unsigned)sound_channels);
   if( settings_current.sound )
     sound_lowlevel_frame( samples, count );
 

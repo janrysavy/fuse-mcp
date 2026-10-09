@@ -15,6 +15,7 @@
 #include "options.h"
 #include "settings.h"
 #include "sound.h"
+#include "fuse_rpc.h"
 #include "tape.h"
 #include "sound/dc_filter.h"
 #include "sound/output_mixer.h"
@@ -305,6 +306,7 @@ ula_update( libspectrum_dword at_tstates )
 void
 sound_ula( libspectrum_dword at_tstates, int mic_on, int beeper_on )
 {
+  if( pyro_rpc_enabled ) pyro_rpc_audio_ula(at_tstates,mic_on,beeper_on);
   ula_mic_on = !!mic_on;
   ula_beeper_on = !!beeper_on;
   ula_update( at_tstates );

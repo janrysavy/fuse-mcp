@@ -6,6 +6,9 @@ extern "C" {
 #endif
 extern int pyro_rpc_enabled;
 extern int pyro_rpc_trace_enabled;
+extern int pyro_rpc_audio_enabled;
+void pyro_rpc_audio_ula(unsigned at_tstates, int mic_on, int beeper_on);
+void pyro_rpc_audio_pcm(const short *samples, unsigned count, unsigned channels);
 int pyro_rpc_arguments(int *argc, char **argv);
 int pyro_rpc_start(void);
 int pyro_rpc_boundary(void);

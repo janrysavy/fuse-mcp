@@ -19,6 +19,7 @@
 
 #include "config.h"
 #include "sound.h"
+#include "fuse_rpc.h"
 
 #ifdef ENABLE_AUTOMATION
 #include "automation/artifacts.h"
@@ -38,6 +39,7 @@ sound_lowlevel_init( const char *device, int *freqptr, int *stereoptr )
     return 0;
   }
 #endif
+  if( pyro_rpc_audio_enabled ) { *stereoptr = SOUND_STEREO_AY_NONE; return 0; }
   return 1;
 }
 
