@@ -34,6 +34,13 @@ extern "C" {
 using J = nlohmann::json;
 int pyro_rpc_enabled = 0;
 int pyro_rpc_trace_enabled = 0;
+int pyro_rpc_audio_enabled = 0;
+struct AudioEdge { uint64_t clock; int mic,ear; };
+static std::vector<AudioEdge> audio_edges;
+static std::vector<short> audio_pcm;
+static uint64_t audio_begin=0,audio_end=0,audio_pcm_origin=0,audio_max_frames=480000,audio_dropped=0;
+static unsigned audio_rate=48000,audio_channels=1;
+static int audio_mic=0,audio_ear=0,audio_initial_mic=0,audio_initial_ear=0;
 static int port = 2304;
 static bool paused = true;
 static uint64_t revision = 1, next_op = 1, next_bp = 1, active_op = 0;
@@ -230,7 +237,7 @@ static J capabilities() {
   return {{"emulator","Fuse"},{"version",PACKAGE_VERSION},{"session_id","fuse"},{"cpu","Z80"},{"model",machine_current->id},
     {"native_debugger",true},{"transport","JSON-RPC 2.0 TCP JSON-lines"},{"bind","127.0.0.1"},{"rpc_port",port},
     {"cpu_cycle_frequency",machine_current->timings.processor_speed},{"time_base","native ULA frames and Z80 T-states"},
-    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read"}},
+    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read"}},
     {"limits",{{"address_bits",16},{"max_line_bytes",1048576},{"max_queue",64},{"max_breakpoints",256},{"max_memory_bytes",65536}}},
     {"unsupported",{"watchpoints","conditional_breakpoints","step_over","reverse_execution","complete_machine_snapshots","GUI","XT_scan_codes"}}};
 }
@@ -289,6 +296,56 @@ static bool matches(const J &p) {
   return p.at("kind")=="execution" ? z80.pc.w==a : read(a,1)[0]==p.at("value").get<unsigned>();
 }
 static J dispatch(const std::string &method,const J &p) {
+  auto audio_status=[](){return J{{"active",bool(pyro_rpc_audio_enabled)},
+    {"begin_clock",audio_begin},{"end_clock",pyro_rpc_audio_enabled?clock_value():audio_end},
+    {"clock_hz",machine_current->timings.processor_speed},{"sample_rate",audio_rate},
+    {"channels",audio_channels},{"pcm_frames",audio_pcm.size()/audio_channels},
+    {"pcm_origin_clock",audio_pcm_origin},{"edge_records",audio_edges.size()},
+    {"initial_mic",audio_initial_mic},{"initial_ear",audio_initial_ear},
+    {"dropped_records",audio_dropped},{"max_frames",audio_max_frames},
+    {"pcm_model","Native Fuse output_mixer/speaker filters, fresh filter history, complete raster frames only"}};};
+  if(method=="audio.start") {
+    fields(p,{"sample_rate","max_frames"});check_paused();
+    require(!pyro_rpc_audio_enabled,"audio capture already active");
+    unsigned rate=number(p.value("sample_rate",J(48000)),192000,"invalid audio sample rate");
+    require(rate>=8000,"audio sample rate too low");
+    uint64_t frames=number(p.value("max_frames",J(480000)),1920000,"audio frame limit too high");
+    require(frames>0,"audio frame limit must be positive");
+    sound_end();audio_edges.clear();audio_pcm.clear();audio_dropped=0;
+    audio_rate=rate;audio_channels=1;audio_max_frames=frames;
+    audio_begin=audio_end=clock_value();audio_pcm_origin=audio_begin-tstates;
+    audio_initial_mic=audio_mic;audio_initial_ear=audio_ear;
+    settings_current.sound=1;settings_current.sound_freq=rate;
+    pyro_rpc_audio_enabled=1;sound_init(nullptr);
+    if(!sound_enabled){pyro_rpc_audio_enabled=0;throw Invalid("Native headless sound initialization failed");}
+    return audio_status();
+  }
+  if(method=="audio.stop") {fields(p,{});check_paused();require(pyro_rpc_audio_enabled,"audio capture inactive");
+    audio_end=clock_value();pyro_rpc_audio_enabled=0;sound_end();return audio_status();}
+  if(method=="audio.status"){fields(p,{});check_paused();return audio_status();}
+  if(method=="audio.read") {
+    fields(p,{"section","offset","limit"});check_paused();
+    require(p.contains("section")&&p.at("section").is_string(),"audio section required");
+    auto section=p.at("section").get<std::string>();
+    uint64_t offset=number(p.value("offset",J(0)),2000000,"audio offset too high");
+    uint64_t limit=number(p.value("limit",J(2048)),4096,"audio page too large");require(limit>0,"empty audio page");
+    J result={{"section",section},{"offset",offset},{"status",audio_status()}};
+    if(section=="pcm") {
+      uint64_t total=audio_pcm.size()/audio_channels;
+      unsigned n=offset>=total?0:std::min(limit,total-offset);
+      std::vector<unsigned char> bytes;bytes.reserve(n*audio_channels*2);
+      for(size_t i=offset*audio_channels;i<(offset+n)*audio_channels;i++) {
+        unsigned v=unsigned(uint16_t(audio_pcm[i]));bytes.push_back(v&255);bytes.push_back(v>>8);
+      }
+      result.update({{"total",total},{"next_offset",offset+n},{"data_base64",b64(bytes)},{"format","s16le"}});
+    } else if(section=="events") {
+      J rows=J::array();for(size_t i=offset;i<audio_edges.size()&&rows.size()<limit;i++) {
+        auto &e=audio_edges[i];rows.push_back({{"clock",e.clock},{"mic",e.mic},{"ear",e.ear}});
+      }
+      result.update({{"total",audio_edges.size()},{"next_offset",offset+rows.size()},{"records",rows}});
+    } else throw Invalid("unknown audio section");
+    return result;
+  }
   if(method=="trace.start") {
     fields(p,{"pc_ranges","write_ranges","max_units","max_records","max_writes"});check_paused();
     auto pcs=trace_ranges(p.value("pc_ranges",J::array({{{"address",0},{"length",65536}}})));
@@ -476,4 +533,16 @@ extern "C" void pyro_rpc_advanced(){if(pyro_rpc_enabled){instructions++;revision
 }}
 extern "C" void pyro_rpc_record_contention(unsigned cycles) {
   if (trace_inflight) trace_unit_waits += cycles;
+}
+extern "C" void pyro_rpc_audio_ula(unsigned at_tstates,int mic_on,int beeper_on) {
+  bool changed=audio_mic!=!!mic_on||audio_ear!=!!beeper_on;
+  audio_mic=!!mic_on;audio_ear=!!beeper_on;
+  if(!pyro_rpc_audio_enabled||!changed)return;
+  if(audio_edges.size()>=200000){audio_dropped++;return;}
+  audio_edges.push_back({uint64_t(spectrum_get_frame_count())*machine_current->timings.tstates_per_frame+at_tstates,audio_mic,audio_ear});
+}
+extern "C" void pyro_rpc_audio_pcm(const short *data,unsigned count,unsigned channels) {
+  if(!pyro_rpc_audio_enabled)return;
+  if(channels!=audio_channels||audio_pcm.size()+count>audio_max_frames*channels){audio_dropped+=count;return;}
+  audio_pcm.insert(audio_pcm.end(),data,data+count);
 }
