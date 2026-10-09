@@ -30,6 +30,10 @@ extern "C" {
 #include "display.h"
 #include "settings.h"
 #include "sound.h"
+#ifndef UI_NULL
+#include "ui/ui.h"
+#include "ui/uidisplay.h"
+#endif
 }
 using J = nlohmann::json;
 int pyro_rpc_enabled = 0;
@@ -388,6 +392,23 @@ static J dispatch(const std::string &method,const J &p) {
   if(method=="state.get" || method=="state.get_registers"){fields(p,{});return registers();}
   if(method=="memory.read"){fields(p,{"address","length"});return descriptor(number(p.at("address"),65535,"invalid address"),number(p.value("length",J(1)),65536,"invalid length"));}
   if(method=="video.snapshot"){fields(p,{});auto v=descriptor(16384,6912);v["adapter"]="ZX Spectrum ULA";v["width"]=256;v["height"]=192;v["format"]="spectrum-screen";return v;}
+#ifndef UI_NULL
+  if(method=="video.present") {
+    fields(p,{"flash_phase"});check_paused();
+    unsigned phase=p.contains("flash_phase")?unsigned(number(p["flash_phase"],1,"invalid flash_phase")):
+      ((spectrum_get_frame_count()/DISPLAY_FLASH_HALF_PERIOD)&1u);
+    auto screen=read(0x4000,6912);
+    for(unsigned y=0;y<192;y++)for(unsigned x=0;x<32;x++) {
+      unsigned attr=screen[6144+(y/8)*32+x];
+      unsigned ink=(attr&7)|((attr&64)>>3),paper=((attr>>3)&7)|((attr&64)>>3);
+      if((attr&128)&&phase)std::swap(ink,paper);
+      unsigned address=((y&0xc0)<<5)+((y&7)<<8)+((y&0x38)<<2)+x;
+      uidisplay_plot8(x+DISPLAY_BORDER_ASPECT_WIDTH/8,y+DISPLAY_BORDER_HEIGHT,screen[address],ink,paper);
+    }
+    uidisplay_area(0,0,DISPLAY_ASPECT_WIDTH,DISPLAY_SCREEN_HEIGHT);uidisplay_frame_end();
+    return {{"source","screen_ram"},{"clock",clock_value()},{"state_revision",revision}};
+  }
+#endif
   if(method=="video.export_png")return export_png(p);
   if(method=="state.observe") {
     fields(p,{"expected_state_revision","memory","video_memory"});check_paused();guard_revision(p);
@@ -520,7 +541,12 @@ extern "C" int pyro_rpc_boundary() {
         for(size_t i=0;i<breakpoints.size();i++)if(breakpoints[i]["address"]==z80.pc.w){auto bp=breakpoints[i];if(bp["once"].get<bool>())breakpoints.erase(breakpoints.begin()+i);stop("breakpoint",{{"breakpoint_id",bp["breakpoint_id"]},{"address",z80.pc.w}});break;}
       }
     }
-    if(paused)Sleep(2);
+    if(paused) {
+#ifndef UI_NULL
+      ui_event();
+#endif
+      Sleep(2);
+    }
   }while(paused && !fuse_exiting);
   exempt_pc=-1;if(!fuse_exiting)trace_begin_unit();return fuse_exiting;
 }
