@@ -33,6 +33,7 @@ extern "C" {
 }
 using J = nlohmann::json;
 int pyro_rpc_enabled = 0;
+int pyro_rpc_trace_enabled = 0;
 static int port = 2304;
 static bool paused = true;
 static uint64_t revision = 1, next_op = 1, next_bp = 1, active_op = 0;
@@ -40,6 +41,21 @@ static uint64_t instructions = 0, step_target = 0, deadline = 0;
 static int exempt_pc = -1;
 static J predicate = nullptr, breakpoints = J::array(), completed = J::array();
 static J last_stop = {{"kind", "startup"}};
+struct TraceInstruction {
+  uint64_t clock, end_clock;
+  unsigned pc, next_pc, af, bc, de, hl, ix, iy, sp;
+  std::vector<unsigned char> opcode;
+};
+struct TraceWrite { uint64_t clock; unsigned pc,address,before,value; };
+static std::vector<TraceInstruction> trace_instructions;
+static std::vector<TraceWrite> trace_writes;
+static std::array<uint64_t,65536> trace_pc_counts{}, trace_pc_cycles{}, trace_pc_waits{};
+static uint64_t trace_unit_waits=0;
+static std::vector<std::pair<unsigned,unsigned>> trace_pc_ranges, trace_write_ranges;
+static TraceInstruction trace_current{};
+static bool trace_inflight=false, trace_event_pending=false;
+static uint64_t trace_units=0, trace_events=0, trace_begin_clock=0,trace_end_clock=0,trace_dropped_writes=0;
+static uint64_t trace_max_units=1000000, trace_max_records=100000, trace_max_writes=200000;
 struct Request {
   std::string line, response;
   bool done = false;
@@ -149,9 +165,38 @@ static J capabilities() {
   return {{"emulator","Fuse"},{"version",PACKAGE_VERSION},{"session_id","fuse"},{"cpu","Z80"},{"model",machine_current->id},
     {"native_debugger",true},{"transport","JSON-RPC 2.0 TCP JSON-lines"},{"bind","127.0.0.1"},{"rpc_port",port},
     {"cpu_cycle_frequency",machine_current->timings.processor_speed},{"time_base","native ULA frames and Z80 T-states"},
-    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot"}},
+    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot","trace.start","trace.stop","trace.status","trace.read"}},
     {"limits",{{"address_bits",16},{"max_line_bytes",1048576},{"max_queue",64},{"max_breakpoints",256},{"max_memory_bytes",65536}}},
     {"unsupported",{"watchpoints","conditional_breakpoints","step_over","reverse_execution","complete_machine_snapshots","GUI","XT_scan_codes"}}};
+}
+static bool trace_contains(const std::vector<std::pair<unsigned,unsigned>>&ranges,unsigned address) {
+  for(auto range:ranges)if(address>=range.first&&address<range.second)return true;
+  return false;
+}
+static J trace_status() {
+  return {{"active",bool(pyro_rpc_trace_enabled)},{"units",trace_units},{"instruction_records",trace_instructions.size()},
+    {"write_records",trace_writes.size()},{"dropped_writes",trace_dropped_writes},
+    {"begin_clock",trace_begin_clock},{"end_clock",pyro_rpc_trace_enabled?clock_value():trace_end_clock},
+    {"event_tstates",trace_events},{"max_units",trace_max_units},{"max_records",trace_max_records},{"max_writes",trace_max_writes},
+    {"timing","native opcode/refresh units; device-event cycles counted separately"}};
+}
+static std::vector<std::pair<unsigned,unsigned>> trace_ranges(const J&value) {
+  require(value.is_array()&&value.size()<=16,"need at most 16 ranges");
+  std::vector<std::pair<unsigned,unsigned>> result;
+  for(auto&r:value){fields(r,{"address","length"});unsigned a=number(r.at("address"),65535,"invalid trace range");
+    unsigned n=number(r.at("length"),65536,"invalid trace length");require(n>0&&a+n<=65536,"trace range outside 64K");result.emplace_back(a,a+n);}
+  return result;
+}
+static void trace_begin_unit() {
+  if(!pyro_rpc_trace_enabled)return;
+  trace_current={clock_value(),0,z80.pc.w,0,z80.af.w,z80.bc.w,z80.de.w,z80.hl.w,z80.ix.w,z80.iy.w,z80.sp.w,{}};
+  if(trace_contains(trace_pc_ranges,z80.pc.w))trace_current.opcode=read(z80.pc.w,std::min(4u,65536u-z80.pc.w));
+  trace_inflight=true;
+}
+extern "C" void pyro_rpc_memory_write(unsigned address,unsigned before,unsigned value) {
+  if(!pyro_rpc_trace_enabled||!trace_inflight||!trace_contains(trace_write_ranges,address))return;
+  if(trace_writes.size()>=trace_max_writes){trace_dropped_writes++;return;}
+  trace_writes.push_back({clock_value(),trace_current.pc,address,before,value});
 }
 static void set_register(const std::string &key,unsigned v) {
   if(key=="af")z80.af.w=v;else if(key=="bc")z80.bc.w=v;else if(key=="de")z80.de.w=v;else if(key=="hl")z80.hl.w=v;
@@ -179,6 +224,40 @@ static bool matches(const J &p) {
   return p.at("kind")=="execution" ? z80.pc.w==a : read(a,1)[0]==p.at("value").get<unsigned>();
 }
 static J dispatch(const std::string &method,const J &p) {
+  if(method=="trace.start") {
+    fields(p,{"pc_ranges","write_ranges","max_units","max_records","max_writes"});check_paused();
+    auto pcs=trace_ranges(p.value("pc_ranges",J::array({{{"address",0},{"length",65536}}})));
+    auto writes=trace_ranges(p.value("write_ranges",J::array()));
+    auto units=number(p.value("max_units",J(1000000)),10000000,"trace unit limit too large");
+    auto records=number(p.value("max_records",J(100000)),250000,"trace record limit too large");
+    auto write_count=number(p.value("max_writes",J(200000)),500000,"trace write limit too large");
+    require(units>0&&records>0&&write_count>0,"trace limits must be positive");
+    std::vector<TraceInstruction> ins;ins.reserve(records);std::vector<TraceWrite> wr;wr.reserve(write_count);
+    trace_instructions=std::move(ins);trace_writes=std::move(wr);trace_pc_ranges=std::move(pcs);trace_write_ranges=std::move(writes);
+    trace_pc_counts.fill(0);trace_pc_cycles.fill(0);trace_pc_waits.fill(0);trace_unit_waits=0;trace_units=trace_events=trace_dropped_writes=0;
+    trace_max_units=units;trace_max_records=records;trace_max_writes=write_count;trace_inflight=trace_event_pending=false;
+    trace_begin_clock=trace_end_clock=clock_value();pyro_rpc_trace_enabled=1;return trace_status();
+  }
+  if(method=="trace.stop") {fields(p,{});check_paused();pyro_rpc_trace_enabled=0;trace_end_clock=clock_value();return trace_status();}
+  if(method=="trace.status") {fields(p,{});return trace_status();}
+  if(method=="trace.read") {
+    fields(p,{"section","offset","limit"});check_paused();
+    auto section=p.value("section",J("instructions")).get<std::string>();
+    auto offset=number(p.value("offset",J(0)),500000,"trace offset too large");
+    auto limit=number(p.value("limit",J(1024)),2048,"trace page too large");require(limit>0,"trace limit must be positive");
+    J rows=J::array();uint64_t total=0;
+    if(section=="instructions") {
+      total=trace_instructions.size();for(size_t i=offset;i<total&&rows.size()<limit;i++){auto&r=trace_instructions[i];
+        rows.push_back({{"clock",r.clock},{"end_clock",r.end_clock},{"pc",r.pc},{"next_pc",r.next_pc},
+          {"af",r.af},{"bc",r.bc},{"de",r.de},{"hl",r.hl},{"ix",r.ix},{"iy",r.iy},{"sp",r.sp},{"opcode_prefix_hex",hex(r.opcode)}});}
+    } else if(section=="writes") {
+      total=trace_writes.size();for(size_t i=offset;i<total&&rows.size()<limit;i++){auto&r=trace_writes[i];
+        rows.push_back({{"clock",r.clock},{"pc",r.pc},{"address",r.address},{"before",r.before},{"value",r.value}});}
+    } else if(section=="profile") {
+      for(unsigned pc=0;pc<65536;pc++)if(trace_pc_counts[pc]){if(total>=offset&&rows.size()<limit)rows.push_back({{"pc",pc},{"count",trace_pc_counts[pc]},{"tstates",trace_pc_cycles[pc]},{"wait_tstates",trace_pc_waits[pc]}});total++;}
+    } else throw Invalid("unknown trace section");
+    return {{"section",section},{"offset",offset},{"total",total},{"next_offset",offset+rows.size()},{"records",rows},{"status",trace_status()}};
+  }
   if(method=="agent.capabilities" || method=="emulator.info"){fields(p,{});return capabilities();}
   if(method=="session.status") {
     fields(p,{"session_id"});if(p.contains("session_id"))require(p.at("session_id")=="fuse","unknown session");
@@ -297,6 +376,7 @@ extern "C" int pyro_rpc_start() {
 }
 extern "C" int pyro_rpc_boundary() {
   if(!pyro_rpc_enabled)return 0;
+  if(pyro_rpc_trace_enabled&&trace_event_pending){trace_events+=clock_value()-trace_end_clock;trace_event_pending=false;}
   do {
     if(pending.load()) {
       for(int i=0;i<16;i++) {
@@ -307,7 +387,10 @@ extern "C" int pyro_rpc_boundary() {
       }
     }
     if(!paused) {
-      if(step_target && instructions>=step_target)stop("step");
+      if(pyro_rpc_trace_enabled&&(trace_units>=trace_max_units||trace_instructions.size()>=trace_max_records||trace_dropped_writes)) {
+        pyro_rpc_trace_enabled=0;trace_end_clock=clock_value();stop("trace_limit",trace_status());
+      }
+      else if(step_target && instructions>=step_target)stop("step");
       else if(!predicate.is_null() && matches(predicate))stop("predicate",{{"predicate",predicate}});
       else if(deadline && time_ns()>=deadline)stop("timeout");
       else if(exempt_pc!=z80.pc.w) {
@@ -316,7 +399,15 @@ extern "C" int pyro_rpc_boundary() {
     }
     if(paused)Sleep(2);
   }while(paused && !fuse_exiting);
-  exempt_pc=-1;return fuse_exiting;
+  exempt_pc=-1;if(!fuse_exiting)trace_begin_unit();return fuse_exiting;
 }
 extern "C" void pyro_rpc_advanced(){if(pyro_rpc_enabled){instructions++;revision++;
+  if(pyro_rpc_trace_enabled&&trace_inflight){trace_current.end_clock=clock_value();trace_current.next_pc=z80.pc.w;
+    trace_pc_counts[trace_current.pc]++;trace_pc_cycles[trace_current.pc]+=trace_current.end_clock-trace_current.clock;
+    trace_pc_waits[trace_current.pc]+=trace_unit_waits;trace_unit_waits=0;trace_units++;
+    if(!trace_current.opcode.empty())trace_instructions.push_back(std::move(trace_current));
+    trace_end_clock=clock_value();trace_inflight=false;trace_event_pending=true;}
 }}
+extern "C" void pyro_rpc_record_contention(unsigned cycles) {
+  if (trace_inflight) trace_unit_waits += cycles;
+}
