@@ -135,6 +135,71 @@ static std::vector<unsigned char> read(unsigned address,unsigned length) {
 static J descriptor(unsigned a,unsigned n) {
   auto v=read(a,n);return {{"address",a},{"length",n},{"hex",hex(v)},{"data_base64",b64(v)},{"sha256",hash(v)},{"state_revision",revision}};
 }
+// PNG RGBA8, filter None. Compression is supplied by our pinned libspectrum.
+// This observes guest/display state on Fuse's main thread; it never runs the CPU.
+static void check_paused();
+static void png_be32(std::vector<unsigned char> &v, uint32_t n) {
+  for(int shift=24;shift>=0;shift-=8)v.push_back(static_cast<unsigned char>(n>>shift));
+}
+static void png_chunk(std::vector<unsigned char> &v,const char *type,const std::vector<unsigned char> &data) {
+  png_be32(v,uint32_t(data.size()));size_t start=v.size();
+  v.insert(v.end(),type,type+4);v.insert(v.end(),data.begin(),data.end());
+  uint32_t crc=0xffffffffu;
+  for(size_t i=start;i<v.size();i++) {
+    crc^=v[i];for(int b=0;b<8;b++)crc=(crc>>1)^(0xedb88320u & (0u-(crc&1u)));
+  }
+  png_be32(v,crc^0xffffffffu);
+}
+static J export_png(const J &p) {
+  fields(p,{"path","source","flash_phase"});check_paused();
+  std::string source="screen_ram";
+  if(p.contains("source")){require(p["source"].is_string(),"source must be a string");source=p["source"].get<std::string>();}
+  require(source=="screen_ram" || source=="ula_raster","invalid PNG source");
+  require(source=="screen_ram" || !p.contains("flash_phase"),"FLASH override only applies to screen_ram");
+  unsigned phase=p.contains("flash_phase")?unsigned(number(p["flash_phase"],1,"invalid flash_phase")):
+    ((spectrum_get_frame_count()/DISPLAY_FLASH_HALF_PERIOD)&1u);
+  auto screen=read(0x4000,6912);
+  std::vector<unsigned char> rgba,filtered;rgba.reserve(256*192*4);filtered.reserve(192*(1+256*4));
+  for(unsigned y=0;y<192;y++) {
+    filtered.push_back(0);
+    for(unsigned x=0;x<256;x++) {
+      unsigned colour;
+      if(source=="ula_raster")colour=unsigned(display_getpixel(int(x)+DISPLAY_BORDER_ASPECT_WIDTH,int(y)+DISPLAY_BORDER_HEIGHT));
+      else {
+        unsigned attr=screen[6144+(y/8)*32+x/8];
+        unsigned ink=(attr&7)|((attr&64)>>3),paper=((attr>>3)&7)|((attr&64)>>3);
+        if((attr&128) && phase)std::swap(ink,paper);
+        unsigned address=((y&0xc0)<<5)+((y&7)<<8)+((y&0x38)<<2)+x/8;
+        colour=(screen[address]&(128>>(x%8)))?ink:paper;
+      }
+      // Same palette as Fuse screenshot.c and automation/artifacts.c: 192/255.
+      unsigned level=(colour&8)?255:192;
+      std::array<unsigned char,4> pixel={static_cast<unsigned char>((colour&2)?level:0),
+        static_cast<unsigned char>((colour&4)?level:0),static_cast<unsigned char>((colour&1)?level:0),255};
+      rgba.insert(rgba.end(),pixel.begin(),pixel.end());filtered.insert(filtered.end(),pixel.begin(),pixel.end());
+    }
+  }
+  libspectrum_byte *compressed=nullptr;size_t compressed_size=0;
+  if(libspectrum_zlib_compress(filtered.data(),filtered.size(),&compressed,&compressed_size)!=LIBSPECTRUM_ERROR_NONE)
+    throw std::runtime_error("PNG compression failed");
+  std::vector<unsigned char> png={137,80,78,71,13,10,26,10},ihdr;
+  png_be32(ihdr,256);png_be32(ihdr,192);ihdr.insert(ihdr.end(),{8,6,0,0,0});
+  png_chunk(png,"IHDR",ihdr);png_chunk(png,"IDAT",std::vector<unsigned char>(compressed,compressed+compressed_size));
+  libspectrum_free(compressed);png_chunk(png,"IEND",{});
+  J result={{"available",true},{"format","png"},{"width",256},{"height",192},{"projection","native"},
+    {"source",source},{"palette","fuse_rgb_192_255"},{"byte_size",png.size()},{"sha256",hash(png)},
+    {"rgba_sha256",hash(rgba)},{"source_screen_ram_sha256",hash(screen)},{"clock",clock_value()},
+    {"state_revision",revision},{"frame_count",spectrum_get_frame_count()}};
+  if(source=="screen_ram")result["flash_phase"]=phase;
+  if(p.contains("path")) {
+    require(p["path"].is_string(),"path must be a string");auto path=p["path"].get<std::string>();
+    require(!path.empty() && path.find('\0')==std::string::npos,"invalid path");
+    std::ofstream file(std::filesystem::u8path(path),std::ios::binary|std::ios::trunc);
+    file.write(reinterpret_cast<const char *>(png.data()),std::streamsize(png.size()));file.close();
+    if(!file)throw std::runtime_error("Cannot write PNG file");result["path"]=path;
+  } else result["data_base64"]=b64(png);
+  return result;
+}
 static J registers() {
   J g={{"af",z80.af.w},{"bc",z80.bc.w},{"de",z80.de.w},{"hl",z80.hl.w},
     {"af_alt",z80.af_.w},{"bc_alt",z80.bc_.w},{"de_alt",z80.de_.w},{"hl_alt",z80.hl_.w},
@@ -165,7 +230,7 @@ static J capabilities() {
   return {{"emulator","Fuse"},{"version",PACKAGE_VERSION},{"session_id","fuse"},{"cpu","Z80"},{"model",machine_current->id},
     {"native_debugger",true},{"transport","JSON-RPC 2.0 TCP JSON-lines"},{"bind","127.0.0.1"},{"rpc_port",port},
     {"cpu_cycle_frequency",machine_current->timings.processor_speed},{"time_base","native ULA frames and Z80 T-states"},
-    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot","trace.start","trace.stop","trace.status","trace.read"}},
+    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read"}},
     {"limits",{{"address_bits",16},{"max_line_bytes",1048576},{"max_queue",64},{"max_breakpoints",256},{"max_memory_bytes",65536}}},
     {"unsupported",{"watchpoints","conditional_breakpoints","step_over","reverse_execution","complete_machine_snapshots","GUI","XT_scan_codes"}}};
 }
@@ -266,6 +331,7 @@ static J dispatch(const std::string &method,const J &p) {
   if(method=="state.get" || method=="state.get_registers"){fields(p,{});return registers();}
   if(method=="memory.read"){fields(p,{"address","length"});return descriptor(number(p.at("address"),65535,"invalid address"),number(p.value("length",J(1)),65536,"invalid length"));}
   if(method=="video.snapshot"){fields(p,{});auto v=descriptor(16384,6912);v["adapter"]="ZX Spectrum ULA";v["width"]=256;v["height"]=192;v["format"]="spectrum-screen";return v;}
+  if(method=="video.export_png")return export_png(p);
   if(method=="state.observe") {
     fields(p,{"expected_state_revision","memory","video_memory"});check_paused();guard_revision(p);
     auto windows=p.value("memory",J::array());require(windows.is_array()&&windows.size()<=16,"invalid memory windows");
