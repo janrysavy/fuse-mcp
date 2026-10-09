@@ -40,6 +40,7 @@
 #include "machines/spec128.h"
 #include "machines/specplus3.h"
 #include "memory_pages.h"
+#include "fuse_rpc.h"
 #include "module.h"
 #include "peripherals/disk/opus.h"
 #include "peripherals/sound/uspeech.h"
@@ -428,7 +429,7 @@ readbyte( libspectrum_word address )
   if( debugger_mode != DEBUGGER_MODE_INACTIVE )
     debugger_check( DEBUGGER_BREAKPOINT_TYPE_READ, address );
 
-  if( mapping->contended ) tstates += ula_contention[ tstates ];
+  if( mapping->contended ) tstates += pyro_rpc_contention(ula_contention[ tstates ]);
   tstates += 3;
 
   if( address < 0x4000 ) {
@@ -474,7 +475,7 @@ writebyte( libspectrum_word address, libspectrum_byte b )
   if( debugger_mode != DEBUGGER_MODE_INACTIVE )
     debugger_check( DEBUGGER_BREAKPOINT_TYPE_WRITE, address );
 
-  if( mapping->contended ) tstates += ula_contention[ tstates ];
+  if( mapping->contended ) tstates += pyro_rpc_contention(ula_contention[ tstates ]);
 
   tstates += 3;
 
@@ -571,6 +572,7 @@ writebyte_internal( libspectrum_word address, libspectrum_byte b )
 
     memory_display_dirty( address, b );
 
+    if(pyro_rpc_trace_enabled) pyro_rpc_memory_write(address, memory[offset], b);
     memory[ offset ] = b;
   } else if( uspeech_available ) {
     /* TODO: check if we can move this check above memory writes.

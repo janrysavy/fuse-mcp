@@ -1,3 +1,4 @@
+#include "fuse_rpc.h"
 /* ula.c: ULA routines
    Copyright (c) 1999-2017 Philip Kendall, Darren Salt
    Copyright (c) 2015 Stuart Brady
@@ -259,7 +260,7 @@ void
 ula_contend_port_early( libspectrum_word port )
 {
   if( memory_map_read[ port >> MEMORY_PAGE_SIZE_LOGARITHM ].contended )
-    tstates += ula_contention_no_mreq[ tstates ];
+    tstates += pyro_rpc_contention(ula_contention_no_mreq[ tstates ]);
    
   tstates++;
 }
@@ -269,14 +270,14 @@ ula_contend_port_late( libspectrum_word port )
 {
   if( machine_current->ram.port_from_ula( port ) ) {
 
-    tstates += ula_contention_no_mreq[ tstates ]; tstates += 2;
+    tstates += pyro_rpc_contention(ula_contention_no_mreq[ tstates ]); tstates += 2;
 
   } else {
 
     if( memory_map_read[ port >> MEMORY_PAGE_SIZE_LOGARITHM ].contended ) {
-      tstates += ula_contention_no_mreq[ tstates ]; tstates++;
-      tstates += ula_contention_no_mreq[ tstates ]; tstates++;
-      tstates += ula_contention_no_mreq[ tstates ];
+      tstates += pyro_rpc_contention(ula_contention_no_mreq[ tstates ]); tstates++;
+      tstates += pyro_rpc_contention(ula_contention_no_mreq[ tstates ]); tstates++;
+      tstates += pyro_rpc_contention(ula_contention_no_mreq[ tstates ]);
     } else {
       tstates += 2;
     }
