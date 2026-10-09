@@ -76,6 +76,7 @@ fi
 
 dnl Checks for programs.
 AC_PROG_CC
+AC_PROG_CXX
 AC_MSG_CHECKING([whether $CC supports C11])
 AC_COMPILE_IFELSE(
   [AC_LANG_SOURCE([[

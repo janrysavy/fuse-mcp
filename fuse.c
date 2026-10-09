@@ -61,6 +61,7 @@
 #include "display.h"
 #include "event.h"
 #include "fuse.h"
+#include "fuse_rpc.h"
 #include "infrastructure/startup_manager.h"
 #include "keyboard.h"
 #include "machine.h"
@@ -195,6 +196,8 @@ int main(int argc, char **argv)
   fatInitDefault();
 #endif				/* #ifdef GEKKO */
   
+  if(pyro_rpc_arguments(&argc,argv)) return 1;
+
   if(fuse_init(argc,argv)) {
     fprintf(stderr,"%s: error initialising -- giving up!\n", fuse_progname);
     return 1;
@@ -202,6 +205,8 @@ int main(int argc, char **argv)
 
   if( settings_current.show_help ||
       settings_current.show_version ) return 0;
+
+  if(pyro_rpc_start()) return 1;
 
 #ifdef UI_NULL
   if( settings_current.unittests ) {
@@ -213,6 +218,7 @@ int main(int argc, char **argv)
     if( automation_active() ) automation_arm( spectrum_get_frame_count() );
 #endif
     while( !fuse_exiting ) {
+      if(pyro_rpc_boundary()) break;
       z80_do_opcodes();
       event_do_events();
 #ifdef ENABLE_AUTOMATION

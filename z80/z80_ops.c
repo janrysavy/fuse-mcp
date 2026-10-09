@@ -2,7 +2,7 @@
    Copyright (c) 1999-2018 Philip Kendall, Witold Filipczyk
    Copyright (c) 2015-2023 Stuart Brady
    Copyright (c) 2015-2017 Gergely Szasz
-   Copyright (c) 2015 Sergio Baldoví
+   Copyright (c) 2015 Sergio BaldovĂ­
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -33,6 +33,9 @@
 #endif
 
 #include "debugger/debugger.h"
+#ifndef CORETEST
+#include "fuse_rpc.h"
+#endif
 #include "event.h"
 #include "machine.h"
 #include "memory_pages.h"
@@ -388,6 +391,9 @@ z80_do_opcodes( void )
     switch(opcode) {
 #include "z80/opcodes_base.c"
     }
+#ifndef CORETEST
+    if(pyro_rpc_enabled) { pyro_rpc_advanced(); return; }
+#endif
 
   }
 
