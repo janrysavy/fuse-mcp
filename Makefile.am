@@ -24,9 +24,13 @@ ACLOCAL_AMFLAGS = -I m4
 
 bin_PROGRAMS = fuse
 
+# Pyro native RPC
+fuse_CXXFLAGS = -std=c++17
+
+
 noinst_PROGRAMS =
 
-fuse_SOURCES = display.c \
+fuse_SOURCES = fuse_rpc.cpp display.c \
 	display_border.c \
 	display_dirty.c \
 	display_internal.h \
@@ -72,7 +76,7 @@ fuse_SOURCES = display.c \
 	utils.c
 
 fuse_LDADD = \
-             $(PTHREAD_LIBS) \
+             $(PTHREAD_LIBS) -lws2_32 -lbcrypt \
              $(LIBSPECTRUM_LIBS) \
              $(GTK_LIBS) \
              $(GLIB_LIBS) \
