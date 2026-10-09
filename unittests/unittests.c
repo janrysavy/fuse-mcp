@@ -32,13 +32,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Native Windows tests use their working directory, not Unix /tmp. */
-#ifdef _WIN32
-#define FUSE_TEST_TMPDIR "."
-#else
-#define FUSE_TEST_TMPDIR "/tmp"
-#endif
-
 #include "libspectrum.h"
 
 #include "debugger/debugger.h"
@@ -99,6 +92,27 @@
 #include "automation/artifacts.h"
 #endif /* ENABLE_AUTOMATION */
 
+/* Keep generated fixture paths absolute for native Windows ROM lookup. */
+static int
+unittest_temporary_path( char *buffer, size_t size, const char *name )
+{
+  const char *directory;
+  char working_directory[ PATH_MAX ];
+  int length;
+#ifdef _WIN32
+  directory = getenv( "TMP" );
+  if( !directory || !*directory ) directory = getenv( "TEMP" );
+  if( !directory || !*directory ) {
+    if( !getcwd( working_directory, sizeof( working_directory ) ) ) return 1;
+    directory = working_directory;
+  }
+#else
+  directory = "/tmp";
+#endif
+  length = snprintf( buffer, size, "%s/%s", directory, name );
+  return length < 0 || (size_t)length >= size;
+}
+
 static int
 rzx_automatic_snapshot_count( libspectrum_snap **automatic_snap )
 {
@@ -128,7 +142,8 @@ rzx_automatic_snapshot_count( libspectrum_snap **automatic_snap )
 static int
 rzx_post_interrupt_autosave_test( void )
 {
-  const char *filename = FUSE_TEST_TMPDIR "/fuse-rzx-autosave-test.rzx";
+  char filename[ PATH_MAX ];
+  if( unittest_temporary_path( filename, sizeof( filename ), "fuse-rzx-autosave-test.rzx" ) ) return 1;
   libspectrum_snap *snap;
   libspectrum_dword frame_tstates;
   int old_autosaves, disabled, error = 0, i;
@@ -183,7 +198,8 @@ rzx_post_interrupt_autosave_test( void )
 static int
 rzx_retrigger_autosave_test( void )
 {
-  const char *filename = FUSE_TEST_TMPDIR "/fuse-rzx-retrigger-test.rzx";
+  char filename[ PATH_MAX ];
+  if( unittest_temporary_path( filename, sizeof( filename ), "fuse-rzx-retrigger-test.rzx" ) ) return 1;
   libspectrum_snap *snap;
   int old_autosaves, delayed, error = 0, i;
 
@@ -1126,7 +1142,8 @@ snapshot_missing_rom_file_uses_snapshot_rom_test( void )
 static int
 snapshot_write_read_roundtrip_test( void )
 {
-  char temporary_path[] = FUSE_TEST_TMPDIR "/fuse-snapshot-roundtrip-XXXXXX";
+  char temporary_path[ PATH_MAX ];
+  if( unittest_temporary_path( temporary_path, sizeof( temporary_path ), "fuse-snapshot-roundtrip-XXXXXX" ) ) return 1;
   char filename[ PATH_MAX ];
   libspectrum_machine old_machine = machine_current->machine;
   int fd, r = 0;
@@ -1518,7 +1535,8 @@ static int
 psg_unittest( void )
 {
   static const unsigned char header[] = "PSG\x1a";
-  char temporary_path[] = FUSE_TEST_TMPDIR "/fuse-psg-test-XXXXXX";
+  char temporary_path[ PATH_MAX ];
+  if( unittest_temporary_path( temporary_path, sizeof( temporary_path ), "fuse-psg-test-XXXXXX" ) ) return 1;
   unsigned char expected[ 26 ];
   unsigned char read_back[ 26 ];
   FILE *file;
@@ -2595,10 +2613,14 @@ static int
 machine_load_rom_bank_with_sizes_test( void )
 {
   static const size_t allowed_lengths[] = { 0x2000, 0x4000 };
-  char rom8[] = FUSE_TEST_TMPDIR "/fuse-rom-8k-XXXXXX";
-  char rom16[] = FUSE_TEST_TMPDIR "/fuse-rom-16k-XXXXXX";
-  char rom_bad[] = FUSE_TEST_TMPDIR "/fuse-rom-bad-XXXXXX";
-  const char *missing_rom = FUSE_TEST_TMPDIR "/fuse-rom-does-not-exist";
+  char rom8[ PATH_MAX ];
+  if( unittest_temporary_path( rom8, sizeof( rom8 ), "fuse-rom-8k-XXXXXX" ) ) return 1;
+  char rom16[ PATH_MAX ];
+  if( unittest_temporary_path( rom16, sizeof( rom16 ), "fuse-rom-16k-XXXXXX" ) ) return 1;
+  char rom_bad[ PATH_MAX ];
+  if( unittest_temporary_path( rom_bad, sizeof( rom_bad ), "fuse-rom-bad-XXXXXX" ) ) return 1;
+  char missing_rom[ PATH_MAX ];
+  if( unittest_temporary_path( missing_rom, sizeof( missing_rom ), "fuse-rom-does-not-exist" ) ) return 1;
   memory_page map[MEMORY_PAGES_IN_16K];
   libspectrum_byte snapshot_rom[0x4000];
   size_t loaded_length = 0;
@@ -2686,7 +2708,8 @@ cleanup:
 static int
 utils_file_lifecycle_test( void )
 {
-  char filename[] = FUSE_TEST_TMPDIR "/fuse-utils-file-XXXXXX";
+  char filename[ PATH_MAX ];
+  if( unittest_temporary_path( filename, sizeof( filename ), "fuse-utils-file-XXXXXX" ) ) return 1;
   compat_file_vtable_t vtable;
   utils_file file;
   unsigned char data[] = { 0x01, 0x00, 0x00 };
@@ -2728,7 +2751,8 @@ utils_file_lifecycle_test( void )
 static int
 utils_file_harddisk_identify_test( void )
 {
-  char temporary_path[] = FUSE_TEST_TMPDIR "/fuse-utils-hdf-XXXXXX";
+  char temporary_path[ PATH_MAX ];
+  if( unittest_temporary_path( temporary_path, sizeof( temporary_path ), "fuse-utils-hdf-XXXXXX" ) ) return 1;
   char filename[ PATH_MAX ];
   compat_file_vtable_t vtable;
   utils_file file;
@@ -3040,7 +3064,8 @@ dck_lifecycle_test( void )
   libspectrum_machine old_machine = machine_current->machine;
   utils_file file;
   int bank, reset, fd, r = 0;
-  char filename[] = FUSE_TEST_TMPDIR "/fuse-dck-lifecycle-XXXXXX";
+  char filename[ PATH_MAX ];
+  if( unittest_temporary_path( filename, sizeof( filename ), "fuse-dck-lifecycle-XXXXXX" ) ) return 1;
 
   fd = mkstemp( filename );
   if( fd < 0 ) return 1;
@@ -3319,7 +3344,8 @@ utils_open_loaded_compressed_disk_test( void )
 static int
 utils_open_loaded_disk_merge_test( void )
 {
-  char temporary_path[] = FUSE_TEST_TMPDIR "/fuse-disk-merge-XXXXXX";
+  char temporary_path[ PATH_MAX ];
+  if( unittest_temporary_path( temporary_path, sizeof( temporary_path ), "fuse-disk-merge-XXXXXX" ) ) return 1;
   char filename_a[ PATH_MAX ], filename_b[ PATH_MAX ];
   compat_file_vtable_t vtable;
   utils_file file;
@@ -3381,7 +3407,8 @@ utils_open_loaded_disk_merge_test( void )
 static int
 disk_write_blank_disk_cpc_save_test( void )
 {
-  char temporary_path[] = FUSE_TEST_TMPDIR "/fuse-disk-blank-cpc-XXXXXX";
+  char temporary_path[ PATH_MAX ];
+  if( unittest_temporary_path( temporary_path, sizeof( temporary_path ), "fuse-disk-blank-cpc-XXXXXX" ) ) return 1;
   char filename[ PATH_MAX ];
   disk_t disk;
   int fd, r = 0;
@@ -3415,7 +3442,8 @@ disk_write_blank_disk_cpc_save_test( void )
 static int
 disk_write_open_udi_roundtrip_test( void )
 {
-  char temporary_path[] = FUSE_TEST_TMPDIR "/fuse-disk-roundtrip-XXXXXX";
+  char temporary_path[ PATH_MAX ];
+  if( unittest_temporary_path( temporary_path, sizeof( temporary_path ), "fuse-disk-roundtrip-XXXXXX" ) ) return 1;
   char filename[ PATH_MAX ];
   disk_t write_disk, open_disk;
   int fd, i, r = 0;
@@ -3551,7 +3579,8 @@ automation_audio_artifacts_test( void )
   const size_t sample_count = ARRAY_SIZE( samples );
   const size_t byte_count = 2 * sample_count;
   const unsigned int rate = 44100, channels = 1;
-  char dir_template[] = FUSE_TEST_TMPDIR "/fuse-automation-audio-XXXXXX";
+  char dir_template[ PATH_MAX ];
+  if( unittest_temporary_path( dir_template, sizeof( dir_template ), "fuse-automation-audio-XXXXXX" ) ) return 1;
   char wav_path[ PATH_MAX ];
   libspectrum_byte expected[ 44 + 2 * ARRAY_SIZE( samples ) ];
   libspectrum_byte *payload;
