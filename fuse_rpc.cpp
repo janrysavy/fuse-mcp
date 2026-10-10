@@ -31,6 +31,7 @@ extern "C" {
 #include "z80/z80.h"
 #include "keyboard.h"
 #include "peripherals/joystick.h"
+#include "periph.h"
 #include "display.h"
 #include "settings.h"
 #include "sound.h"
@@ -260,7 +261,7 @@ static J capabilities() {
     {"native_debugger",true},{"transport","JSON-RPC 2.0 TCP JSON-lines"},{"bind","127.0.0.1"},{"rpc_port",port},
     {"cpu_cycle_frequency",machine_current->timings.processor_speed},{"time_base","native ULA frames and Z80 T-states"},
     {"rpc_keyboard_owner",bool(pyro_rpc_owns_keyboard())},
-    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","input.joystick","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read","coverage.start","coverage.stop","coverage.reset","coverage.status","coverage.read"}},
+    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","input.joystick","input.configure_kempston","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read","coverage.start","coverage.stop","coverage.reset","coverage.status","coverage.read"}},
     {"limits",{{"address_bits",16},{"max_line_bytes",1048576},{"max_queue",64},{"max_breakpoints",256},{"max_memory_bytes",65536}}},
     {"unsupported",{"watchpoints","conditional_breakpoints","step_over","reverse_execution","complete_machine_snapshots","GUI","XT_scan_codes"}}};
 }
@@ -523,6 +524,21 @@ static J dispatch(const std::string &method,const J &p) {
     }
     for(auto&e:batch)joystick_press(which,e.first,e.second);
     revision++;return {{"accepted",batch.size()},{"state_revision",revision}};
+  }
+  if(method=="input.configure_kempston") {
+    fields(p,{"joystick","connected"});check_paused();
+    auto which=number(p.at("joystick"),1,"joystick must be 0 or 1");
+    require(p.at("connected").is_boolean(),"connected must be boolean");
+    require(machine_current->machine==LIBSPECTRUM_MACHINE_48,"Kempston configuration currently supports the 48K machine");
+    require(!periph_postcheck(),"pending peripheral reset must be resolved first");
+    bool connected=p.at("connected").get<bool>();
+    int &output=which ? settings_current.joystick_2_output : settings_current.joystick_1_output;
+    output=connected ? JOYSTICK_TYPE_KEMPSTON : JOYSTICK_TYPE_NONE;
+    for(int button=JOYSTICK_BUTTON_LEFT;button<=JOYSTICK_BUTTON_FIRE;button++)
+      joystick_press(which,static_cast<joystick_button>(button),0);
+    settings_current.joy_kempston=connected;
+    periph_update();
+    revision++;return {{"joystick",which},{"connected",connected},{"state_revision",revision}};
   }
   if(method=="input.state") {
     fields(p,{});check_paused();J rows=J::array();
