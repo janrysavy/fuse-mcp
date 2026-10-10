@@ -44,6 +44,16 @@ using J = nlohmann::json;
 int pyro_rpc_enabled = 0;
 int pyro_rpc_trace_enabled = 0;
 int pyro_rpc_audio_enabled = 0;
+int pyro_rpc_coverage_enabled = 0;
+static std::array<unsigned char,8192> coverage_bitmap{};
+static unsigned coverage_unique=0;
+static uint64_t coverage_units=0;
+extern "C" void pyro_rpc_coverage_pc(unsigned pc) {
+  unsigned char mask=static_cast<unsigned char>(1u<<(pc&7));
+  auto &slot=coverage_bitmap[(pc&65535)>>3];
+  if(!(slot&mask)){slot|=mask;coverage_unique++;}
+  coverage_units++;
+}
 struct AudioEdge { uint64_t clock; int mic,ear; };
 static std::vector<AudioEdge> audio_edges;
 static std::vector<short> audio_pcm;
@@ -247,7 +257,7 @@ static J capabilities() {
     {"native_debugger",true},{"transport","JSON-RPC 2.0 TCP JSON-lines"},{"bind","127.0.0.1"},{"rpc_port",port},
     {"cpu_cycle_frequency",machine_current->timings.processor_speed},{"time_base","native ULA frames and Z80 T-states"},
     {"rpc_keyboard_owner",bool(pyro_rpc_owns_keyboard())},
-    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read"}},
+    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read","coverage.start","coverage.stop","coverage.reset","coverage.status","coverage.read"}},
     {"limits",{{"address_bits",16},{"max_line_bytes",1048576},{"max_queue",64},{"max_breakpoints",256},{"max_memory_bytes",65536}}},
     {"unsupported",{"watchpoints","conditional_breakpoints","step_over","reverse_execution","complete_machine_snapshots","GUI","XT_scan_codes"}}};
 }
@@ -306,6 +316,23 @@ static bool matches(const J &p) {
   return p.at("kind")=="execution" ? z80.pc.w==a : read(a,1)[0]==p.at("value").get<unsigned>();
 }
 static J dispatch(const std::string &method,const J &p) {
+  if(method=="coverage.start" || method=="coverage.stop" || method=="coverage.reset" ||
+     method=="coverage.status" || method=="coverage.read") {
+    if(method=="coverage.start") fields(p,{"mode","reset"}); else fields(p,{});
+    if(method!="coverage.status") check_paused();
+    if(p.contains("mode")) require(p["mode"].is_string() && p["mode"]=="pc","invalid coverage mode");
+    if(p.contains("reset")) require(p["reset"].is_boolean(),"reset must be boolean");
+    if(method=="coverage.reset" || (method=="coverage.start" && p.value("reset",true))) {
+      coverage_bitmap.fill(0);coverage_unique=0;coverage_units=0;
+    }
+    if(method=="coverage.start") pyro_rpc_coverage_enabled=1;
+    if(method=="coverage.stop") pyro_rpc_coverage_enabled=0;
+    J result={{"mode","pc"},{"format","pc-bitset-lsb0"},{"enabled",bool(pyro_rpc_coverage_enabled)},
+      {"map_bytes",8192},{"unique_pcs",coverage_unique},{"dispatch_units",coverage_units},
+      {"clock_cycles",clock_value()},{"clock_bits",64}};
+    if(method=="coverage.read") result["bitmap_base64"]=b64(std::vector<unsigned char>(coverage_bitmap.begin(),coverage_bitmap.end()));
+    return result;
+  }
   auto audio_status=[](){return J{{"active",bool(pyro_rpc_audio_enabled)},
     {"begin_clock",audio_begin},{"end_clock",pyro_rpc_audio_enabled?clock_value():audio_end},
     {"clock_hz",machine_current->timings.processor_speed},{"sample_rate",audio_rate},
