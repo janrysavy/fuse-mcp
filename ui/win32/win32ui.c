@@ -30,6 +30,7 @@
 #include "debugger/debugger.h"
 #include "display.h"
 #include "fuse.h"
+#include "fuse_rpc.h"
 #include "keyboard.h"
 #include "menu.h"
 #include "peripherals/joystick.h"
@@ -469,7 +470,7 @@ ui_error_specific( ui_error_level severity, const char *message )
 static int
 win32ui_lose_focus( HWND hWnd, WPARAM wParam, LPARAM lParam )
 {
-  keyboard_release_all();
+  if( !pyro_rpc_owns_keyboard() ) keyboard_release_all();
   ui_mouse_suspend();
   return 0;
 }

@@ -10,6 +10,8 @@
 #include <condition_variable>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -33,6 +35,9 @@ extern "C" {
 #ifndef UI_NULL
 #include "ui/ui.h"
 #include "ui/uidisplay.h"
+#ifdef UI_WIN32
+#include "ui/win32/win32internals.h"
+#endif
 #endif
 }
 using J = nlohmann::json;
@@ -241,6 +246,7 @@ static J capabilities() {
   return {{"emulator","Fuse"},{"version",PACKAGE_VERSION},{"session_id","fuse"},{"cpu","Z80"},{"model",machine_current->id},
     {"native_debugger",true},{"transport","JSON-RPC 2.0 TCP JSON-lines"},{"bind","127.0.0.1"},{"rpc_port",port},
     {"cpu_cycle_frequency",machine_current->timings.processor_speed},{"time_base","native ULA frames and Z80 T-states"},
+    {"rpc_keyboard_owner",bool(pyro_rpc_owns_keyboard())},
     {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read"}},
     {"limits",{{"address_bits",16},{"max_line_bytes",1048576},{"max_queue",64},{"max_breakpoints",256},{"max_memory_bytes",65536}}},
     {"unsupported",{"watchpoints","conditional_breakpoints","step_over","reverse_execution","complete_machine_snapshots","GUI","XT_scan_codes"}}};
@@ -465,6 +471,25 @@ static J dispatch(const std::string &method,const J &p) {
     for(auto&e:events){fields(e,{"key","pressed"});require(e.at("key").is_string()&&e.at("pressed").is_boolean(),"invalid key event");auto k=e.at("key").get<std::string>();int code=0;if(k=="enter")code=KEYBOARD_Enter;else if(k=="space")code=KEYBOARD_space;else if(k=="caps_shift")code=KEYBOARD_Caps;else if(k=="symbol_shift")code=KEYBOARD_Symbol;else if(k.size()==1&&((k[0]>='a'&&k[0]<='z')||(k[0]>='0'&&k[0]<='9')))code=k[0];require(code!=0,"unknown Spectrum key");batch.emplace_back(code,e.at("pressed").get<bool>());}
     for(auto&e:batch){if(e.second)keyboard_press(keyboard_key_name(e.first));else keyboard_release(keyboard_key_name(e.first));}revision++;return {{"accepted",batch.size()},{"state_revision",revision}};
   }
+  if(method=="input.state") {
+    fields(p,{});check_paused();J rows=J::array();
+    for(unsigned i=0;i<8;i++)rows.push_back(keyboard_read(255u^(1u<<i)));
+    return {{"rows",rows},{"rpc_keyboard_owner",bool(pyro_rpc_owns_keyboard())}};
+  }
+#ifdef UI_WIN32
+  // Isolated regression hook. Never enabled for game replay or normal use.
+  if(method=="test.host_keyboard_event") {
+    fields(p,{"kind"});check_paused();
+    const char *enabled=getenv("FUSE_RPC_TEST_HOST_EVENTS");
+    require(enabled && !strcmp(enabled,"1"),"host-event test hook disabled");
+    auto kind=p.at("kind").get<std::string>();
+    if(kind=="focus_lost")SendMessage(fuse_hWnd,WM_ACTIVATE,WA_INACTIVE,0);
+    else if(kind=="a_down")SendMessage(fuse_hWnd,WM_KEYDOWN,'A',0);
+    else if(kind=="a_up")SendMessage(fuse_hWnd,WM_KEYUP,'A',0);
+    else throw Invalid("unknown host test event");
+    return {{"kind",kind},{"clock",clock_value()}};
+  }
+#endif
   throw std::out_of_range("method not found");
 }
 static std::string handle(const std::string &line) {
@@ -504,6 +529,10 @@ extern "C" int pyro_rpc_arguments(int *argc,char **argv) {
     catch(...){fprintf(stderr,"invalid RPC port\n");return 1;}
     pyro_rpc_enabled=1;for(int j=i;j+2<*argc;j++)argv[j]=argv[j+2];*argc-=2;argv[*argc]=nullptr;i--;
   }return 0;
+}
+extern "C" int pyro_rpc_owns_keyboard(void) {
+  const char *value = getenv("FUSE_RPC_INPUT_ONLY");
+  return pyro_rpc_enabled && value && !strcmp(value, "1");
 }
 extern "C" int pyro_rpc_start() {
   if(!pyro_rpc_enabled)return 0;
