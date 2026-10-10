@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -89,6 +90,7 @@ struct Request {
   std::condition_variable cv;
 };
 static std::mutex queue_mutex;
+static std::condition_variable queue_ready;
 static std::deque<std::shared_ptr<Request>> requests;
 static std::atomic<bool> pending{false};
 static std::atomic<unsigned> client_count{0};
@@ -544,6 +546,7 @@ static void client(SOCKET socket) {
     for(;;){auto end=buffer.find('\n');if(end==std::string::npos)break;if(end>1048576){closesocket(socket);return;}
       auto request=std::make_shared<Request>();request->line=buffer.substr(0,end);buffer.erase(0,end+1);
       {std::lock_guard<std::mutex> lock(queue_mutex);if(requests.size()>=64){closesocket(socket);return;}requests.push_back(request);pending=true;}
+      queue_ready.notify_one();
       std::unique_lock<std::mutex> lock(request->mutex);request->cv.wait(lock,[&]{return request->done;});
       size_t offset=0;while(offset<request->response.size()){int n=send(socket,request->response.data()+offset,int(request->response.size()-offset),0);if(n<=0){closesocket(socket);return;}offset+=n;}
     }if(buffer.size()>1048576)break;
@@ -601,7 +604,11 @@ extern "C" int pyro_rpc_boundary() {
 #ifndef UI_NULL
       ui_event();
 #endif
-      Sleep(2);
+      // Keep GUI event polling bounded, but wake immediately for queued RPC.
+      // The predicate shares the producer lock, so notifications cannot be
+      // lost between draining the queue and entering the paused wait.
+      std::unique_lock<std::mutex> lock(queue_mutex);
+      queue_ready.wait_for(lock,std::chrono::milliseconds(2),[]{return !requests.empty();});
     }
   }while(paused && !fuse_exiting);
   exempt_pc=-1;if(!fuse_exiting)trace_begin_unit();return fuse_exiting;
