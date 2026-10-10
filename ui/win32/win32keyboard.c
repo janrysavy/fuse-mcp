@@ -36,6 +36,7 @@
 #include "display.h"
 #include "fuse.h"
 #include "keyboard.h"
+#include "fuse_rpc.h"
 #include "machine.h"
 #include "settings.h"
 #include "snapshot.h"
@@ -85,6 +86,7 @@ win32keyboard_end( void )
 void
 win32keyboard_keypress( WPARAM wParam, LPARAM lParam )
 {
+  if( pyro_rpc_owns_keyboard() ) return;
   input_key fuse_keysym;
   input_event_t fuse_event;
 
@@ -121,6 +123,7 @@ win32keyboard_keypress( WPARAM wParam, LPARAM lParam )
 void
 win32keyboard_keyrelease( WPARAM wParam, LPARAM lParam )
 {
+  if( pyro_rpc_owns_keyboard() ) return;
   input_key fuse_keysym;
   input_event_t fuse_event;
 
