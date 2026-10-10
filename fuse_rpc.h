@@ -7,6 +7,9 @@ extern "C" {
 extern int pyro_rpc_enabled;
 extern int pyro_rpc_trace_enabled;
 extern int pyro_rpc_audio_enabled;
+extern int pyro_rpc_coverage_enabled;
+/* Called at actual opcode dispatch, never for a pre-execution breakpoint. */
+void pyro_rpc_coverage_pc(unsigned pc);
 /* Opt-in replay ownership: host focus/keyboard events must not alter RPC keys. */
 int pyro_rpc_owns_keyboard(void);
 void pyro_rpc_audio_ula(unsigned at_tstates, int mic_on, int beeper_on);

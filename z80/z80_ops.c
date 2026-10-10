@@ -384,6 +384,11 @@ z80_do_opcodes( void )
     END_CHECK
 
   end_opcode:
+#ifndef CORETEST
+    /* Record a real dispatch, not the debugger's observed next PC or HALT
+       refresh units. Prefix/operand bytes consumed inside it are excluded. */
+    if(pyro_rpc_coverage_enabled && !z80.halted) pyro_rpc_coverage_pc( PC );
+#endif
     PC++; R++;
     last_Q = Q; /* keep Q value from previous opcode for SCF and CCF */
     Q = 0;      /* preempt Q value assuming next opcode doesn't set flags */
