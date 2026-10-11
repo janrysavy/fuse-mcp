@@ -3237,7 +3237,7 @@ dck_archive_test( void )
 #endif
   };
   libspectrum_machine old_machine = machine_current->machine;
-  char directory[] = "/tmp/fuse-dck-archive-XXXXXX";
+  char directory[ PATH_MAX ];
   char filename[ 128 ];
   utils_file file;
   size_t format;
@@ -3246,6 +3246,8 @@ dck_archive_test( void )
   memset( plain, 0, 9 );
   plain[ 1 ] = LIBSPECTRUM_DCK_PAGE_ROM;
   memset( plain + 9, 0x79, 0x2000 );
+  if( unittest_temporary_path( directory, sizeof( directory ),
+                              "fuse-dck-archive-XXXXXX" ) ) return 1;
   if( !mkdtemp( directory ) ) return 1;
   utils_file_init( &file, NULL );
   if( machine_select( LIBSPECTRUM_MACHINE_TC2068 ) ) { r++; goto cleanup; }
@@ -3957,8 +3959,7 @@ cleanup:
 static int
 screenshot_scr_roundtrip_test( void )
 {
-  static const char temp_prefix[] = "/tmp/fuse-scr-test-XXXXXX";
-  char temporary_path[ sizeof( temp_prefix ) ];
+  char temporary_path[ PATH_MAX ];
   libspectrum_machine old_machine = machine_current->machine;
   libspectrum_dword *saved_last_screen;
   libspectrum_byte saved_screen[ DISPLAY_FILE_SIZE ];
@@ -3969,7 +3970,8 @@ screenshot_scr_roundtrip_test( void )
 
   /* mkdtemp is not provided by MinGW; use mkstemp to obtain a unique
      filename prefix instead. */
-  strcpy( temporary_path, temp_prefix );
+  if( unittest_temporary_path( temporary_path, sizeof( temporary_path ),
+                              "fuse-scr-test-XXXXXX" ) ) return 1;
   fd = mkstemp( temporary_path );
   if( fd < 0 ) return 1;
   close( fd );
