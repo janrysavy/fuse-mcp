@@ -70,7 +70,7 @@ Portable table controls are in `tests/instruction-coverage/table.c`:
 ```sh
 gcc -std=c11 -Wall -Wextra -Werror tests/instruction-coverage/table.c -o table-test
 ./table-test
-g++ -std=c++11 -Wall -Wextra -Werror -Wno-missing-field-initializers -x c++ tests/instruction-coverage/table.c -o table-cpp-test
+g++ -std=c++11 -Wall -Wextra -Werror -x c++ tests/instruction-coverage/table.c -o table-cpp-test
 ./table-cpp-test
 ```
 
@@ -78,3 +78,24 @@ These synthetic controls cover exact kind-key separation, combined/repeated
 hooks, skipped and resumed predicates, outside-dispatch no-op hooks, loss
 reasons, capacity, and counter overflow/reset. They do not replace runtime
 noninterference tests or authentic campaign evidence.
+
+Additional asset-free controls, run against a configured headless build:
+
+```sh
+python3 tests/instruction-coverage/host_paths.py --compiled /path/to/fuse-build --prefix /path/to/libspectrum-prefix --compiler /usr/bin/gcc --output /tmp/fuse-host-controls
+python3 tests/instruction-coverage/runtime.py --executable /path/to/fuse-build/.libs/fuse --output /tmp/fuse-tape-controls
+```
+
+The runtime test uses six ordinary/disabled/success/error tape cases and
+compares enabled/disabled CPU state, RAM, independent PC counts and physical
+clocks. It generates its own tiny TAP payload. No original game assets are
+needed. Use the packaged runtime with its DLLs/ROM directory on Windows.
+
+The host-control recipe extracts verbatim SLT, loader acceleration and tape
+load functions/constants from this checkout. Observable synthetic dependencies
+exercise all five non-NONE acceleration modes, SLT enabled/disabled/empty,
+and tape-load prechecks/playback/success/both failures after PC mutation for
+48K and Timex. It records source hashes. The injected tape errors certify
+hook placement and retained decisions; they do not certify real tape-device
+behavior or hardware timing. Outside-dispatch calls cannot fabricate units.
+Output directories must be new; preserve failed results.

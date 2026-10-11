@@ -57,7 +57,7 @@ int main(void) {
     s=zic_create(4);assert(s);s->enabled=1;
     unsigned found=0,first=0,second=0;
     for (unsigned a=0;a<256 && !found;a++) for(unsigned b=a+1;b<256;b++) {
-        zic_key x={0},y={0};x.pc=y.pc=0x8000;x.next_pc=y.next_pc=0x8002;
+        zic_key x,y;memset(&x,0,sizeof(x));memset(&y,0,sizeof(y));x.pc=y.pc=0x8000;x.next_pc=y.next_pc=0x8002;
         x.length=y.length=2;x.bytes[0]=y.bytes[0]=0x3e;x.outcome=y.outcome=-1;
         x.m1_mask=y.m1_mask=1;x.bytes[1]=(uint8_t)a;y.bytes[1]=(uint8_t)b;
         if ((zic_hash(&x)&7)==(zic_hash(&y)&7)) {first=a;second=b;found=1;break;}
