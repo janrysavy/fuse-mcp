@@ -56,7 +56,7 @@ sub arithmetic_logical ($$$) {
 	    print << "CODE";
       {
 	libspectrum_byte offset, bytetemp;
-	offset = readbyte( PC );
+	offset = Z80_READ_OPERAND(PC );
 	contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 );
 	contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 );
 	contend_read_no_mreq( PC, 1 ); PC++;
@@ -68,9 +68,10 @@ CODE
 	} else {
 	    my $register = ( $arg2 eq '(HL)' ? 'HL' : 'PC' );
 	    my $increment = ( $register eq 'PC' ? '++' : '' );
+	    my $reader = ( $register eq 'PC' ? 'Z80_READ_OPERAND' : 'readbyte' );
 	    print << "CODE";
       {
-	libspectrum_byte bytetemp = readbyte( $register$increment );
+	libspectrum_byte bytetemp = $reader( $register$increment );
 	$opcode(bytetemp);
       }
 CODE
@@ -105,8 +106,8 @@ sub call_jp ($$$) {
     my( $opcode, $condition, $offset ) = @_;
 
     print << "CALL";
-      z80.memptr.b.l = readbyte(PC++);
-      z80.memptr.b.h = readbyte(PC);
+      z80.memptr.b.l = Z80_READ_OPERAND(PC++);
+      z80.memptr.b.h = Z80_READ_OPERAND(PC);
 CALL
 
     if( not defined $offset ) {
@@ -119,7 +120,7 @@ CALL
 	    $condition_string = "F & FLAG_$flag{$condition}";
 	}
 	print << "CALL";
-      if( $condition_string ) {
+      if( Z80_DETAIL_DECISION( $condition_string ) ) {
 	$opcode();
       } else {
         PC++;
@@ -177,7 +178,7 @@ sub cpir_cpdr ($) {
 	if(F & FLAG_H) bytetemp--;
 	F |= ( bytetemp & FLAG_3 ) | ( (bytetemp&0x02) ? FLAG_5 : 0 );
 	Q = F;
-	if( ( F & ( FLAG_V | FLAG_Z ) ) == FLAG_V ) {
+	if( Z80_DETAIL_DECISION( ( F & ( FLAG_V | FLAG_Z ) ) == FLAG_V ) ) {
 	  contend_read_no_mreq( HL, 1 ); contend_read_no_mreq( HL, 1 );
 	  contend_read_no_mreq( HL, 1 ); contend_read_no_mreq( HL, 1 );
 	  contend_read_no_mreq( HL, 1 );
@@ -218,7 +219,7 @@ CODE
 	print << "CODE";
       {
 	libspectrum_byte offset, bytetemp;
-	offset = readbyte( PC );
+	offset = Z80_READ_OPERAND(PC );
 	contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 );
 	contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 );
 	contend_read_no_mreq( PC, 1 ); PC++;
@@ -282,7 +283,7 @@ sub inir_indr ($) {
             sz53_table[B];
 	Q = F;
 
-	if( B ) {
+	if( Z80_DETAIL_DECISION( B ) ) {
 	  contend_write_no_mreq( HL, 1 ); contend_write_no_mreq( HL, 1 );
 	  contend_write_no_mreq( HL, 1 ); contend_write_no_mreq( HL, 1 );
 	  contend_write_no_mreq( HL, 1 );
@@ -331,7 +332,7 @@ sub ldir_lddr ($) {
 	F = ( F & ( FLAG_C | FLAG_Z | FLAG_S ) ) | ( BC ? FLAG_V : 0 ) |
 	  ( bytetemp & FLAG_3 ) | ( (bytetemp & 0x02) ? FLAG_5 : 0 );
 	Q = F;
-	if(BC) {
+	if( Z80_DETAIL_DECISION( BC ) ) {
 	  contend_write_no_mreq( DE, 1 ); contend_write_no_mreq( DE, 1 );
 	  contend_write_no_mreq( DE, 1 ); contend_write_no_mreq( DE, 1 );
 	  contend_write_no_mreq( DE, 1 );
@@ -367,7 +368,7 @@ sub otir_otdr ($) {
             sz53_table[B];
 	Q = F;
 
-	if( B ) {
+	if( Z80_DETAIL_DECISION( B ) ) {
 	  contend_read_no_mreq( BC, 1 ); contend_read_no_mreq( BC, 1 );
 	  contend_read_no_mreq( BC, 1 ); contend_read_no_mreq( BC, 1 );
 	  contend_read_no_mreq( BC, 1 );
@@ -575,10 +576,11 @@ sub opcode_DJNZ (@) {
     print << "DJNZ";
       contend_read_no_mreq( IR, 1 );
       B--;
-      if(B) {
+      if( Z80_DETAIL_DECISION( B ) ) {
 	JR();
       } else {
-	contend_read( PC, 3 );
+        /* The displacement read occurs even when the branch is not taken. */
+        (void)Z80_READ_OPERAND(PC );
         PC++;
       }
 DJNZ
@@ -670,7 +672,7 @@ sub opcode_IN (@) {
 	print << "IN";
       {
 	libspectrum_word intemp;
-	intemp = readbyte( PC++ ) + ( A << 8 );
+	intemp = Z80_READ_OPERAND(PC++ ) + ( A << 8 );
         A=readport( intemp );
 	/* TODO: is this correct if (nn) was 0xff? */
 	z80.memptr.w = intemp + 1;
@@ -728,10 +730,11 @@ sub opcode_JR (@) {
 	    $condition_string = "F & FLAG_$flag{$condition}";
 	}
 	print << "JR";
-      if( $condition_string ) {
+      if( Z80_DETAIL_DECISION( $condition_string ) ) {
         JR();
       } else {
-        contend_read( PC, 3 );
+        /* The displacement read occurs even when the branch is not taken. */
+        (void)Z80_READ_OPERAND(PC );
 	PC++;
       }
 JR
@@ -770,7 +773,7 @@ LD
 LD
 	    }
 	} elsif( $src eq 'nn' ) {
-	    print "      $dest = readbyte( PC++ );\n";
+	    print "      $dest = Z80_READ_OPERAND(PC++ );\n";
 	} elsif( $src =~ /^\(..\)$/ ) {
 	    my $register = substr $src, 1, 2;
 	    if( $register eq 'BC' or $register eq 'DE') {
@@ -784,8 +787,8 @@ LD
         } elsif( $src eq '(nnnn)' ) {
 	    print << "LD";
       {
-	z80.memptr.b.l = readbyte(PC++);
-	z80.memptr.b.h = readbyte(PC++);
+	z80.memptr.b.l = Z80_READ_OPERAND(PC++);
+	z80.memptr.b.h = Z80_READ_OPERAND(PC++);
 	A=readbyte(z80.memptr.w++);
       }
 LD
@@ -793,7 +796,7 @@ LD
 	    print << "LD";
       {
 	libspectrum_byte offset;
-	offset = readbyte( PC );
+	offset = Z80_READ_OPERAND(PC );
 	contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 );
 	contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 );
 	contend_read_no_mreq( PC, 1 ); PC++;
@@ -816,8 +819,8 @@ LD
 	if( $src eq 'nnnn' ) {
 
 	    print << "LD";
-      $low=readbyte(PC++);
-      $high=readbyte(PC++);
+      $low=Z80_READ_OPERAND(PC++);
+      $high=Z80_READ_OPERAND(PC++);
 LD
         } elsif( $src eq 'HL' or $src eq 'REGISTER' ) {
 	    print << "LD";
@@ -845,7 +848,7 @@ LD
 LD
 	} elsif( $src eq 'nn' ) {
 	    print << "LD";
-      writebyte($register,readbyte(PC++));
+      writebyte($register,Z80_READ_OPERAND(PC++));
 LD
         }
 
@@ -854,8 +857,8 @@ LD
 	if( $src eq 'A' ) {
 	    print << "LD";
       {
-	libspectrum_word wordtemp = readbyte( PC++ );
-	wordtemp|=readbyte(PC++) << 8;
+	libspectrum_word wordtemp = Z80_READ_OPERAND(PC++ );
+	wordtemp|=Z80_READ_OPERAND(PC++) << 8;
 	z80.memptr.b.l = wordtemp + 1;
 	z80.memptr.b.h = A;
 	writebyte(wordtemp,A);
@@ -879,7 +882,7 @@ LD
 	  print << "LD";
       {
 	libspectrum_byte offset;
-	offset = readbyte( PC );
+	offset = Z80_READ_OPERAND(PC );
 	contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 );
 	contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 );
 	contend_read_no_mreq( PC, 1 ); PC++;
@@ -891,8 +894,8 @@ LD
 	  print << "LD";
       {
 	libspectrum_byte offset, value;
-	offset = readbyte( PC++ );
-	value = readbyte( PC );
+	offset = Z80_READ_OPERAND(PC++ );
+	value = Z80_READ_OPERAND(PC );
 	contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 ); PC++;
 	z80.memptr.w = REGISTER + (libspectrum_signed_byte)offset;
 	writebyte( z80.memptr.w, value );
@@ -936,7 +939,7 @@ sub opcode_OUT (@) {
     if( $port eq '(nn)' and $register eq 'A' ) {
 	print << "OUT";
       {
-	libspectrum_byte nn = readbyte( PC++ );
+	libspectrum_byte nn = Z80_READ_OPERAND(PC++ );
 	libspectrum_word outtemp = nn | ( A << 8 );
 	z80.memptr.b.h = A;
 	z80.memptr.b.l = (nn + 1);
@@ -988,9 +991,9 @@ RET
         }
 
 	if( defined $not{$condition} ) {
-	    print "      if( ! ( F & FLAG_$flag{$condition} ) ) { RET(); }\n";
+	    print "      if( Z80_DETAIL_DECISION( ! ( F & FLAG_$flag{$condition} ) ) ) { RET(); }\n";
 	} else {
-	    print "      if( F & FLAG_$flag{$condition} ) { RET(); }\n";
+	    print "      if( Z80_DETAIL_DECISION( F & FLAG_$flag{$condition} ) ) { RET(); }\n";
 	}
     }
 }
@@ -1133,9 +1136,9 @@ sub opcode_shift (@) {
 	libspectrum_byte opcode3;
 	contend_read( PC, 3 );
 	z80.memptr.w =
-	    REGISTER + (libspectrum_signed_byte)readbyte_internal( PC );
+	    REGISTER + (libspectrum_signed_byte)Z80_READ_FETCH_DATA( PC );
 	PC++; contend_read( PC, 3 );
-	opcode3 = readbyte_internal( PC );
+	opcode3 = Z80_READ_FETCH_DATA( PC );
 	contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 ); PC++;
 #ifdef HAVE_ENOUGH_MEMORY
 	switch(opcode3) {
@@ -1151,7 +1154,7 @@ shift
       {
 	libspectrum_byte opcode2;
 	contend_read( PC, 4 );
-	opcode2 = readbyte_internal( PC ); PC++;
+	opcode2 = Z80_READ_OPCODE( PC ); PC++;
 	R++;
 #ifdef HAVE_ENOUGH_MEMORY
 	switch(opcode2) {
@@ -1286,6 +1289,7 @@ if( $data_file eq 'opcodes_ddfd.dat' ) {
       PC--;
       R--;
       opcode = opcode2;
+      Z80_DETAIL_FRAGMENT( PC, opcode2 );
 #ifdef HAVE_ENOUGH_MEMORY
       goto end_opcode;
 #else			/* #ifdef HAVE_ENOUGH_MEMORY */

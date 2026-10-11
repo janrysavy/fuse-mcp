@@ -22,6 +22,7 @@
 */
 
 #include "config.h"
+#include "fuse_rpc.h"
 
 #include "event.h"
 #include "loader.h"
@@ -129,6 +130,8 @@ rom_loader_accelerate( int long_pulse )
 void
 accelerate_loader( int long_pulse )
 {
+  if( acceleration_mode != ACCELERATION_MODE_NONE )
+    zic_semantic_override( pyro_rpc_instruction_coverage, ZIC_SEMANTIC_LOADER_ACCELERATION );
   switch( acceleration_mode ) {
   case ACCELERATION_MODE_SOFTWARE_PROJECTS:
     /* The loader converts the number of loop iterations to a pulse length

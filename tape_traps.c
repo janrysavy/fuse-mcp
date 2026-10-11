@@ -11,6 +11,7 @@
 */
 
 #include "config.h"
+#include "fuse_rpc.h"
 
 #include "libspectrum.h"
 
@@ -211,6 +212,7 @@ tape_load_trap( void )
   }
 
   phantom_typist_deactivate();
+  zic_semantic_override( pyro_rpc_instruction_coverage, ZIC_SEMANTIC_TAPE_LOAD );
   set_load_return_pc();
 
   error = tape_trap_load_block( block, &bytes_consumed );
@@ -492,6 +494,7 @@ tape_save_trap( void )
     return error;
   }
 
+  zic_semantic_override( pyro_rpc_instruction_coverage, ZIC_SEMANTIC_TAPE_SAVE );
   tape_modified = 1;
   ui_tape_browser_update( UI_TAPE_BROWSER_NEW_BLOCK, block );
 

@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +30,8 @@ extern "C" {
 #include "machine.h"
 #include "z80/z80.h"
 #include "keyboard.h"
+#include "peripherals/joystick.h"
+#include "periph.h"
 #include "display.h"
 #include "settings.h"
 #include "sound.h"
@@ -44,6 +47,18 @@ using J = nlohmann::json;
 int pyro_rpc_enabled = 0;
 int pyro_rpc_trace_enabled = 0;
 int pyro_rpc_audio_enabled = 0;
+int pyro_rpc_coverage_enabled = 0;
+zic_state *pyro_rpc_instruction_coverage=nullptr;
+unsigned pyro_rpc_detail_raw_opcode=0,pyro_rpc_detail_reused_opcode=0;
+static std::array<unsigned char,8192> coverage_bitmap{};
+static unsigned coverage_unique=0;
+static uint64_t coverage_units=0;
+extern "C" void pyro_rpc_coverage_pc(unsigned pc) {
+  unsigned char mask=static_cast<unsigned char>(1u<<(pc&7));
+  auto &slot=coverage_bitmap[(pc&65535)>>3];
+  if(!(slot&mask)){slot|=mask;coverage_unique++;}
+  coverage_units++;
+}
 struct AudioEdge { uint64_t clock; int mic,ear; };
 static std::vector<AudioEdge> audio_edges;
 static std::vector<short> audio_pcm;
@@ -79,6 +94,7 @@ struct Request {
   std::condition_variable cv;
 };
 static std::mutex queue_mutex;
+static std::condition_variable queue_ready;
 static std::deque<std::shared_ptr<Request>> requests;
 static std::atomic<bool> pending{false};
 static std::atomic<unsigned> client_count{0};
@@ -247,7 +263,7 @@ static J capabilities() {
     {"native_debugger",true},{"transport","JSON-RPC 2.0 TCP JSON-lines"},{"bind","127.0.0.1"},{"rpc_port",port},
     {"cpu_cycle_frequency",machine_current->timings.processor_speed},{"time_base","native ULA frames and Z80 T-states"},
     {"rpc_keyboard_owner",bool(pyro_rpc_owns_keyboard())},
-    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read"}},
+    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","input.joystick","input.configure_kempston","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read","coverage.start","coverage.stop","coverage.reset","coverage.status","coverage.read","coverage.detail.start","coverage.detail.stop","coverage.detail.reset","coverage.detail.status","coverage.detail.read"}},
     {"limits",{{"address_bits",16},{"max_line_bytes",1048576},{"max_queue",64},{"max_breakpoints",256},{"max_memory_bytes",65536}}},
     {"unsupported",{"watchpoints","conditional_breakpoints","step_over","reverse_execution","complete_machine_snapshots","GUI","XT_scan_codes"}}};
 }
@@ -306,6 +322,81 @@ static bool matches(const J &p) {
   return p.at("kind")=="execution" ? z80.pc.w==a : read(a,1)[0]==p.at("value").get<unsigned>();
 }
 static J dispatch(const std::string &method,const J &p) {
+  if(method=="coverage.detail.start" || method=="coverage.detail.stop" ||
+     method=="coverage.detail.reset" || method=="coverage.detail.status" || method=="coverage.detail.read") {
+    if(method=="coverage.detail.start") fields(p,{"reset","capacity"});
+    else if(method=="coverage.detail.read") fields(p,{"offset","limit"});
+    else fields(p,{});
+    if(method!="coverage.detail.status") check_paused();
+    if(p.contains("reset")) require(p["reset"].is_boolean(),"reset must be boolean");
+    zic_state *s=pyro_rpc_instruction_coverage;
+    if(method=="coverage.detail.start") {
+      bool reset=p.value("reset",true);
+      unsigned capacity=static_cast<unsigned>(number(p.value("capacity",J(s?s->capacity:131072)),1048576,"invalid capacity"));
+      require(capacity>=256 && !(capacity&(capacity-1)),"capacity must be a power of two from 256 to 1048576");
+      require(!s || capacity==s->capacity || reset,"resizing requires reset");
+      if(!s || s->capacity!=capacity) {
+        zic_state *replacement=zic_create(capacity);
+        require(replacement!=nullptr,"coverage allocation failed");
+        zic_destroy(s);s=pyro_rpc_instruction_coverage=replacement;
+      }
+      if(reset) zic_reset(s);
+      s->enabled=1;
+    }
+    if(method=="coverage.detail.reset") zic_reset(s);
+    if(method=="coverage.detail.stop" && s) s->enabled=0;
+    J result={{"schema",2},{"format","z80-dispatch-fetched-v2"},
+      {"enabled",bool(s && s->enabled)},{"complete",bool(zic_complete(s))},
+      {"capacity",s?s->capacity:0},{"unique_tuples",s?s->unique:0},
+      {"dispatch_units",s?s->units:0},{"dropped_units",s?s->dropped:0},
+      {"capacity_failures",s?s->capacity_failures:0},{"fetch_failures",s?s->fetch_failures:0},
+      {"decision_failures",s?s->decision_failures:0},
+      {"opcode_override_failures",s?s->opcode_override_failures:0},
+      {"counter_overflow",bool(s && s->counter_overflow)},{"counter_limit",ZIC_COUNTER_LIMIT},
+      {"contains_semantic_overrides",bool(s && s->semantic_override_units)},
+      {"native_semantics_only",bool(zic_complete(s) && !s->semantic_override_units)},
+      {"semantic_override_units",s?s->semantic_override_units:0},
+      {"semantic_kind_units",J{{"fuse_tape_save",s?s->semantic_kind_units[0]:0},
+        {"fuse_tape_load",s?s->semantic_kind_units[1]:0},{"fuse_slt",s?s->semantic_kind_units[2]:0},
+        {"fuse_loader_acceleration",s?s->semantic_kind_units[3]:0},
+        {"mz_cmthack_file",s?s->semantic_kind_units[4]:0},{"mz_cmthack_body",s?s->semantic_kind_units[5]:0}}},
+      {"clock_cycles",clock_value()},
+      {"clock_bits",64},{"max_fetch_bytes",ZIC_MAX_FETCH},{"physical_mapping_certified",false}};
+    if(method=="coverage.detail.read") {
+      unsigned offset=static_cast<unsigned>(number(p.value("offset",J(0)),s?s->unique:0,"invalid offset"));
+      unsigned limit=static_cast<unsigned>(number(p.value("limit",J(256)),1024,"invalid limit"));
+      require(limit>=1,"limit must be at least one");
+      unsigned end=std::min(offset+limit,s?s->unique:0);
+      result["offset"]=offset;result["next_offset"]=end;result["entries"]=J::array();
+      const char *hex="0123456789abcdef";
+      for(unsigned i=offset;i<end;i++) {
+        const zic_row &row=s->rows[i];const zic_key &key=row.key;
+        std::string bytes;bytes.reserve(2*key.length);
+        for(unsigned n=0;n<key.length;n++){bytes+=hex[key.bytes[n]>>4];bytes+=hex[key.bytes[n]&15];}
+        result["entries"].push_back(J{{"id",i},{"pc",key.pc},{"next_pc",key.next_pc},
+          {"bytes",bytes},{"m1_mask",key.m1_mask},{"flags",key.flags},{"semantic_kinds",key.semantic_kinds},{"outcome",key.outcome},
+          {"count",row.count},{"first_dispatch",row.first_dispatch},{"last_dispatch",row.last_dispatch}});
+      }
+    }
+    return result;
+  }
+  if(method=="coverage.start" || method=="coverage.stop" || method=="coverage.reset" ||
+     method=="coverage.status" || method=="coverage.read") {
+    if(method=="coverage.start") fields(p,{"mode","reset"}); else fields(p,{});
+    if(method!="coverage.status") check_paused();
+    if(p.contains("mode")) require(p["mode"].is_string() && p["mode"]=="pc","invalid coverage mode");
+    if(p.contains("reset")) require(p["reset"].is_boolean(),"reset must be boolean");
+    if(method=="coverage.reset" || (method=="coverage.start" && p.value("reset",true))) {
+      coverage_bitmap.fill(0);coverage_unique=0;coverage_units=0;
+    }
+    if(method=="coverage.start") pyro_rpc_coverage_enabled=1;
+    if(method=="coverage.stop") pyro_rpc_coverage_enabled=0;
+    J result={{"mode","pc"},{"format","pc-bitset-lsb0"},{"enabled",bool(pyro_rpc_coverage_enabled)},
+      {"map_bytes",8192},{"unique_pcs",coverage_unique},{"dispatch_units",coverage_units},
+      {"clock_cycles",clock_value()},{"clock_bits",64}};
+    if(method=="coverage.read") result["bitmap_base64"]=b64(std::vector<unsigned char>(coverage_bitmap.begin(),coverage_bitmap.end()));
+    return result;
+  }
   auto audio_status=[](){return J{{"active",bool(pyro_rpc_audio_enabled)},
     {"begin_clock",audio_begin},{"end_clock",pyro_rpc_audio_enabled?clock_value():audio_end},
     {"clock_hz",machine_current->timings.processor_speed},{"sample_rate",audio_rate},
@@ -471,6 +562,44 @@ static J dispatch(const std::string &method,const J &p) {
     for(auto&e:events){fields(e,{"key","pressed"});require(e.at("key").is_string()&&e.at("pressed").is_boolean(),"invalid key event");auto k=e.at("key").get<std::string>();int code=0;if(k=="enter")code=KEYBOARD_Enter;else if(k=="space")code=KEYBOARD_space;else if(k=="caps_shift")code=KEYBOARD_Caps;else if(k=="symbol_shift")code=KEYBOARD_Symbol;else if(k.size()==1&&((k[0]>='a'&&k[0]<='z')||(k[0]>='0'&&k[0]<='9')))code=k[0];require(code!=0,"unknown Spectrum key");batch.emplace_back(code,e.at("pressed").get<bool>());}
     for(auto&e:batch){if(e.second)keyboard_press(keyboard_key_name(e.first));else keyboard_release(keyboard_key_name(e.first));}revision++;return {{"accepted",batch.size()},{"state_revision",revision}};
   }
+  if(method=="input.joystick") {
+    fields(p,{"joystick","events"});check_paused();
+    auto which=number(p.at("joystick"),1,"joystick must be 0 or 1");
+    int output=which ? settings_current.joystick_2_output : settings_current.joystick_1_output;
+    require(output>JOYSTICK_TYPE_NONE&&output<JOYSTICK_TYPE_COUNT,"joystick output is not configured");
+    require(output!=JOYSTICK_TYPE_KEMPSTON||settings_current.joy_kempston,"Kempston interface is disabled");
+    auto events=p.at("events");require(events.is_array()&&!events.empty()&&events.size()<=32,"need 1..32 joystick events");
+    std::vector<std::pair<joystick_button,bool>> batch;
+    for(auto&e:events){
+      fields(e,{"button","pressed"});
+      require(e.at("button").is_string()&&e.at("pressed").is_boolean(),"invalid joystick event");
+      auto name=e.at("button").get<std::string>();int button=-1;
+      if(name=="left")button=JOYSTICK_BUTTON_LEFT;
+      else if(name=="right")button=JOYSTICK_BUTTON_RIGHT;
+      else if(name=="up")button=JOYSTICK_BUTTON_UP;
+      else if(name=="down")button=JOYSTICK_BUTTON_DOWN;
+      else if(name=="fire")button=JOYSTICK_BUTTON_FIRE;
+      require(button>=0,"unknown joystick button");
+      batch.emplace_back(static_cast<joystick_button>(button),e.at("pressed").get<bool>());
+    }
+    for(auto&e:batch)joystick_press(which,e.first,e.second);
+    revision++;return {{"accepted",batch.size()},{"state_revision",revision}};
+  }
+  if(method=="input.configure_kempston") {
+    fields(p,{"joystick","connected"});check_paused();
+    auto which=number(p.at("joystick"),1,"joystick must be 0 or 1");
+    require(p.at("connected").is_boolean(),"connected must be boolean");
+    require(machine_current->machine==LIBSPECTRUM_MACHINE_48,"Kempston configuration currently supports the 48K machine");
+    require(!periph_postcheck(),"pending peripheral reset must be resolved first");
+    bool connected=p.at("connected").get<bool>();
+    int &output=which ? settings_current.joystick_2_output : settings_current.joystick_1_output;
+    output=connected ? JOYSTICK_TYPE_KEMPSTON : JOYSTICK_TYPE_NONE;
+    for(int button=JOYSTICK_BUTTON_LEFT;button<=JOYSTICK_BUTTON_FIRE;button++)
+      joystick_press(which,static_cast<joystick_button>(button),0);
+    settings_current.joy_kempston=connected;
+    periph_update();
+    revision++;return {{"joystick",which},{"connected",connected},{"state_revision",revision}};
+  }
   if(method=="input.state") {
     fields(p,{});check_paused();J rows=J::array();
     for(unsigned i=0;i<8;i++)rows.push_back(keyboard_read(255u^(1u<<i)));
@@ -517,6 +646,7 @@ static void client(SOCKET socket) {
     for(;;){auto end=buffer.find('\n');if(end==std::string::npos)break;if(end>1048576){closesocket(socket);return;}
       auto request=std::make_shared<Request>();request->line=buffer.substr(0,end);buffer.erase(0,end+1);
       {std::lock_guard<std::mutex> lock(queue_mutex);if(requests.size()>=64){closesocket(socket);return;}requests.push_back(request);pending=true;}
+      queue_ready.notify_one();
       std::unique_lock<std::mutex> lock(request->mutex);request->cv.wait(lock,[&]{return request->done;});
       size_t offset=0;while(offset<request->response.size()){int n=send(socket,request->response.data()+offset,int(request->response.size()-offset),0);if(n<=0){closesocket(socket);return;}offset+=n;}
     }if(buffer.size()>1048576)break;
@@ -574,7 +704,11 @@ extern "C" int pyro_rpc_boundary() {
 #ifndef UI_NULL
       ui_event();
 #endif
-      Sleep(2);
+      // Keep GUI event polling bounded, but wake immediately for queued RPC.
+      // The predicate shares the producer lock, so notifications cannot be
+      // lost between draining the queue and entering the paused wait.
+      std::unique_lock<std::mutex> lock(queue_mutex);
+      queue_ready.wait_for(lock,std::chrono::milliseconds(2),[]{return !requests.empty();});
     }
   }while(paused && !fuse_exiting);
   exempt_pc=-1;if(!fuse_exiting)trace_begin_unit();return fuse_exiting;

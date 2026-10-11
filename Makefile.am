@@ -30,7 +30,7 @@ fuse_CXXFLAGS = -std=c++17
 
 noinst_PROGRAMS =
 
-fuse_SOURCES = fuse_rpc.cpp fuse_rpc.h json.hpp display.c \
+fuse_SOURCES = fuse_rpc.cpp fuse_rpc.h instruction_coverage.h json.hpp display.c \
 	display_border.c \
 	display_dirty.c \
 	display_internal.h \
