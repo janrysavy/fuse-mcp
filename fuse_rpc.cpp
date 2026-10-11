@@ -29,6 +29,7 @@ extern "C" {
 #include "machine.h"
 #include "z80/z80.h"
 #include "keyboard.h"
+#include "peripherals/joystick.h"
 #include "display.h"
 #include "settings.h"
 #include "sound.h"
@@ -257,7 +258,7 @@ static J capabilities() {
     {"native_debugger",true},{"transport","JSON-RPC 2.0 TCP JSON-lines"},{"bind","127.0.0.1"},{"rpc_port",port},
     {"cpu_cycle_frequency",machine_current->timings.processor_speed},{"time_base","native ULA frames and Z80 T-states"},
     {"rpc_keyboard_owner",bool(pyro_rpc_owns_keyboard())},
-    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read","coverage.start","coverage.stop","coverage.reset","coverage.status","coverage.read"}},
+    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","input.joystick","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read","coverage.start","coverage.stop","coverage.reset","coverage.status","coverage.read"}},
     {"limits",{{"address_bits",16},{"max_line_bytes",1048576},{"max_queue",64},{"max_breakpoints",256},{"max_memory_bytes",65536}}},
     {"unsupported",{"watchpoints","conditional_breakpoints","step_over","reverse_execution","complete_machine_snapshots","GUI","XT_scan_codes"}}};
 }
@@ -497,6 +498,22 @@ static J dispatch(const std::string &method,const J &p) {
     fields(p,{"events"});check_paused();auto events=p.at("events");require(events.is_array()&&!events.empty()&&events.size()<=32,"need 1..32 key events");std::vector<std::pair<int,bool>> batch;
     for(auto&e:events){fields(e,{"key","pressed"});require(e.at("key").is_string()&&e.at("pressed").is_boolean(),"invalid key event");auto k=e.at("key").get<std::string>();int code=0;if(k=="enter")code=KEYBOARD_Enter;else if(k=="space")code=KEYBOARD_space;else if(k=="caps_shift")code=KEYBOARD_Caps;else if(k=="symbol_shift")code=KEYBOARD_Symbol;else if(k.size()==1&&((k[0]>='a'&&k[0]<='z')||(k[0]>='0'&&k[0]<='9')))code=k[0];require(code!=0,"unknown Spectrum key");batch.emplace_back(code,e.at("pressed").get<bool>());}
     for(auto&e:batch){if(e.second)keyboard_press(keyboard_key_name(e.first));else keyboard_release(keyboard_key_name(e.first));}revision++;return {{"accepted",batch.size()},{"state_revision",revision}};
+  }
+  if(method=="input.joystick") {
+    fields(p,{"device","mask"});check_paused();
+    require(p.at("device").is_string() && p.at("device")=="kempston","only kempston input supported");
+    const unsigned mask=number(p.at("mask"),31,"Kempston mask must be 0..31");
+    require(settings_current.joy_kempston &&
+            settings_current.joystick_1_output==JOYSTICK_TYPE_KEMPSTON,
+            "enable Kempston and select joystick 1 output at startup");
+    // This is a device input, applied by Fuse's CPU owner while paused. Use
+    // the existing peripheral implementation, never guest RAM/register writes.
+    const unsigned bits[5]={2,1,8,4,16};
+    const joystick_button buttons[5]={JOYSTICK_BUTTON_LEFT,JOYSTICK_BUTTON_RIGHT,
+      JOYSTICK_BUTTON_UP,JOYSTICK_BUTTON_DOWN,JOYSTICK_BUTTON_FIRE};
+    for(unsigned i=0;i<5;i++)
+      require(joystick_press(0,buttons[i],(mask&bits[i])!=0),"Kempston input rejected");
+    revision++;return {{"device","kempston"},{"mask",mask},{"state_revision",revision}};
   }
   if(method=="input.state") {
     fields(p,{});check_paused();J rows=J::array();
