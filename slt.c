@@ -24,6 +24,7 @@
 */
 
 #include "config.h"
+#include "fuse_rpc.h"
 
 #include <string.h>
 
@@ -89,6 +90,7 @@ slt_trap( libspectrum_word address, libspectrum_byte level )
     length = slt_length[ level ];
     data = slt[ level ];
 
+    zic_semantic_override( pyro_rpc_instruction_coverage, ZIC_SEMANTIC_SLT );
     while( length-- ) writebyte( address++, *data++ );
 
   }

@@ -345,12 +345,22 @@ static J dispatch(const std::string &method,const J &p) {
     }
     if(method=="coverage.detail.reset") zic_reset(s);
     if(method=="coverage.detail.stop" && s) s->enabled=0;
-    J result={{"schema",1},{"format","z80-dispatch-fetched-v1"},
+    J result={{"schema",2},{"format","z80-dispatch-fetched-v2"},
       {"enabled",bool(s && s->enabled)},{"complete",bool(zic_complete(s))},
       {"capacity",s?s->capacity:0},{"unique_tuples",s?s->unique:0},
       {"dispatch_units",s?s->units:0},{"dropped_units",s?s->dropped:0},
       {"capacity_failures",s?s->capacity_failures:0},{"fetch_failures",s?s->fetch_failures:0},
-      {"decision_failures",s?s->decision_failures:0},{"clock_cycles",clock_value()},
+      {"decision_failures",s?s->decision_failures:0},
+      {"opcode_override_failures",s?s->opcode_override_failures:0},
+      {"counter_overflow",bool(s && s->counter_overflow)},{"counter_limit",ZIC_COUNTER_LIMIT},
+      {"contains_semantic_overrides",bool(s && s->semantic_override_units)},
+      {"native_semantics_only",bool(zic_complete(s) && !s->semantic_override_units)},
+      {"semantic_override_units",s?s->semantic_override_units:0},
+      {"semantic_kind_units",J{{"fuse_tape_save",s?s->semantic_kind_units[0]:0},
+        {"fuse_tape_load",s?s->semantic_kind_units[1]:0},{"fuse_slt",s?s->semantic_kind_units[2]:0},
+        {"fuse_loader_acceleration",s?s->semantic_kind_units[3]:0},
+        {"mz_cmthack_file",s?s->semantic_kind_units[4]:0},{"mz_cmthack_body",s?s->semantic_kind_units[5]:0}}},
+      {"clock_cycles",clock_value()},
       {"clock_bits",64},{"max_fetch_bytes",ZIC_MAX_FETCH},{"physical_mapping_certified",false}};
     if(method=="coverage.detail.read") {
       unsigned offset=static_cast<unsigned>(number(p.value("offset",J(0)),s?s->unique:0,"invalid offset"));
@@ -364,7 +374,7 @@ static J dispatch(const std::string &method,const J &p) {
         std::string bytes;bytes.reserve(2*key.length);
         for(unsigned n=0;n<key.length;n++){bytes+=hex[key.bytes[n]>>4];bytes+=hex[key.bytes[n]&15];}
         result["entries"].push_back(J{{"id",i},{"pc",key.pc},{"next_pc",key.next_pc},
-          {"bytes",bytes},{"m1_mask",key.m1_mask},{"flags",key.flags},{"outcome",key.outcome},
+          {"bytes",bytes},{"m1_mask",key.m1_mask},{"flags",key.flags},{"semantic_kinds",key.semantic_kinds},{"outcome",key.outcome},
           {"count",row.count},{"first_dispatch",row.first_dispatch},{"last_dispatch",row.last_dispatch}});
       }
     }

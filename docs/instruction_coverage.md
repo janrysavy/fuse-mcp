@@ -9,7 +9,9 @@ implicitly runs, pauses or repairs the guest.
 Start defaults to `reset: true` and capacity 131072. Capacity must be a power
 of two from 256 to 1048576; resizing requires reset. Read accepts insertion
 `offset` and `limit` (1–1024, default 256). Counts and dispatch ordinals are
-64-bit. `clock_cycles` is Fuse's 64-bit absolute physical guest cycle count.
+signed-64-bit representable (maximum `counter_limit`, 2^63-1). Checked
+accounting saturates and sets sticky `counter_overflow` on exhaustion;
+`complete` stays false and additions stop until reset. `clock_cycles` is Fuse's 64-bit absolute physical guest cycle count.
 
 Hooks wrap the values returned by explicit existing M1 and operand reads.
 Data reads through HL, stack, indexed addresses or devices are not classified
@@ -31,12 +33,28 @@ qualified prerequisite, not a collector side effect. The shared bounded
 tuple table is byte-identical to the qualified MZ implementation. Disabled
 collection allocates no table. Reset retains enabled state and capacity.
 
-Capacity exhaustion, nonsequential or overlong fetches, missing decisions and
-overridden dispatches cannot produce a complete capture. The API exposes
-explicit dropped-unit and failure counters. An emulator peripheral overriding
-the fetched opcode marks that unit malformed and increments fetch failures;
-it is never reported as a faithful fetched instruction. Known tuples still
-count after capacity exhaustion.
+Schema 2 / `z80-dispatch-fetched-v2` adds host semantic-shortcut provenance.
+Flag 8 and `semantic_kinds` are part of the exact tuple key. Bits 1, 2, 4,
+and 8 respectively identify tape save, tape load, SLT bulk load, and loader
+acceleration; bits 16 and 32 are reserved for the shared MZ CMT file/body
+paths. Repeated hooks in one unit count once per kind. A unit can have several
+kinds. Hooks outside a pending dispatch do nothing.
+
+`complete` means no dispatch evidence was lost. Known shortcut rows remain
+complete even when a host shortcut skipped the normal conditional predicate
+(`outcome:-1`); if that predicate really ran after a partial-error shortcut,
+its actual 0/1 is retained. `semantic_override_units` and named
+`semantic_kind_units` count marked units, including those dropped for another
+reason. `contains_semantic_overrides` reports any marked unit;
+`native_semantics_only` requires complete capture and zero marked units.
+Exclude every semantic row from native instruction/branch targets. These
+fields do not certify hardware accuracy or guest boot provenance.
+
+Capacity exhaustion, nonsequential/overlong fetches and missing ordinary
+decisions make capture incomplete. Unknown opcode substitution is dropped
+with `opcode_override_failures`, distinct from a memory-fetch failure. Known
+tuples still count after capacity exhaustion. Schema-1 archives remain
+unchanged; they cannot certify the absence of host semantic shortcuts.
 
 `physical_mapping_certified: false` is intentional: this version identifies
 logical addresses and byte versions, not physical bank identities. Coverage
@@ -46,3 +64,17 @@ all branches reached, campaign completion, audio parity or performance.
 
 This is an isolated experimental feature. Runtime noninterference and authentic
 campaign qualification must pass before selecting it for accepted regressions.
+
+Portable table controls are in `tests/instruction-coverage/table.c`:
+
+```sh
+gcc -std=c11 -Wall -Wextra -Werror tests/instruction-coverage/table.c -o table-test
+./table-test
+g++ -std=c++11 -Wall -Wextra -Werror -Wno-missing-field-initializers -x c++ tests/instruction-coverage/table.c -o table-cpp-test
+./table-cpp-test
+```
+
+These synthetic controls cover exact kind-key separation, combined/repeated
+hooks, skipped and resumed predicates, outside-dispatch no-op hooks, loss
+reasons, capacity, and counter overflow/reset. They do not replace runtime
+noninterference tests or authentic campaign evidence.
