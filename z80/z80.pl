@@ -578,7 +578,8 @@ sub opcode_DJNZ (@) {
       if(B) {
 	JR();
       } else {
-	contend_read( PC, 3 );
+        /* The displacement read occurs even when the branch is not taken. */
+        (void)readbyte( PC );
         PC++;
       }
 DJNZ
@@ -731,7 +732,8 @@ sub opcode_JR (@) {
       if( $condition_string ) {
         JR();
       } else {
-        contend_read( PC, 3 );
+        /* The displacement read occurs even when the branch is not taken. */
+        (void)readbyte( PC );
 	PC++;
       }
 JR
