@@ -3,3 +3,5 @@
 /keysyms.dat text eol=lf
 /ui/options.dat text eol=lf
 /z80/*.dat text eol=lf
+# Unified diff context deliberately contains space-only lines.
+*.patch -whitespace
