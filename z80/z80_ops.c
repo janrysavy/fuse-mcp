@@ -310,6 +310,7 @@ z80_do_opcodes( void )
     /* Do the instruction fetch; readbyte_internal used here to avoid
        triggering read breakpoints */
     opcode = readbyte_internal( PC );
+    Z80_DETAIL_FIRST( opcode );
 
     CHECK( if1u, if1_available )
 
@@ -384,6 +385,7 @@ z80_do_opcodes( void )
     END_CHECK
 
   end_opcode:
+    if( !z80.halted ) Z80_DETAIL_BEGIN( PC, opcode );
 #ifndef CORETEST
     /* Record a real dispatch, not the debugger's observed next PC or HALT
        refresh units. Prefix/operand bytes consumed inside it are excluded. */
@@ -396,6 +398,7 @@ z80_do_opcodes( void )
     switch(opcode) {
 #include "z80/opcodes_base.c"
     }
+    Z80_DETAIL_FINISH( PC );
 #ifndef CORETEST
     if(pyro_rpc_enabled) { pyro_rpc_advanced(); return; }
 #endif

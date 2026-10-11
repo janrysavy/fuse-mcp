@@ -48,6 +48,8 @@ int pyro_rpc_enabled = 0;
 int pyro_rpc_trace_enabled = 0;
 int pyro_rpc_audio_enabled = 0;
 int pyro_rpc_coverage_enabled = 0;
+zic_state *pyro_rpc_instruction_coverage=nullptr;
+unsigned pyro_rpc_detail_raw_opcode=0,pyro_rpc_detail_reused_opcode=0;
 static std::array<unsigned char,8192> coverage_bitmap{};
 static unsigned coverage_unique=0;
 static uint64_t coverage_units=0;
@@ -261,7 +263,7 @@ static J capabilities() {
     {"native_debugger",true},{"transport","JSON-RPC 2.0 TCP JSON-lines"},{"bind","127.0.0.1"},{"rpc_port",port},
     {"cpu_cycle_frequency",machine_current->timings.processor_speed},{"time_base","native ULA frames and Z80 T-states"},
     {"rpc_keyboard_owner",bool(pyro_rpc_owns_keyboard())},
-    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","input.joystick","input.configure_kempston","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read","coverage.start","coverage.stop","coverage.reset","coverage.status","coverage.read"}},
+    {"methods",{"agent.capabilities","emulator.info","session.status","state.get","state.get_registers","state.observe","state.set_registers","memory.read","memory.write","execution.pause","execution.continue","execution.go","execution.step","execution.run_until","execution.wait","breakpoints.create","breakpoints.list","breakpoints.delete","input.keyboard","input.joystick","input.configure_kempston","video.snapshot","video.export_png","trace.start","trace.stop","trace.status","trace.read","audio.start","audio.stop","audio.status","audio.read","coverage.start","coverage.stop","coverage.reset","coverage.status","coverage.read","coverage.detail.start","coverage.detail.stop","coverage.detail.reset","coverage.detail.status","coverage.detail.read"}},
     {"limits",{{"address_bits",16},{"max_line_bytes",1048576},{"max_queue",64},{"max_breakpoints",256},{"max_memory_bytes",65536}}},
     {"unsupported",{"watchpoints","conditional_breakpoints","step_over","reverse_execution","complete_machine_snapshots","GUI","XT_scan_codes"}}};
 }
@@ -320,6 +322,54 @@ static bool matches(const J &p) {
   return p.at("kind")=="execution" ? z80.pc.w==a : read(a,1)[0]==p.at("value").get<unsigned>();
 }
 static J dispatch(const std::string &method,const J &p) {
+  if(method=="coverage.detail.start" || method=="coverage.detail.stop" ||
+     method=="coverage.detail.reset" || method=="coverage.detail.status" || method=="coverage.detail.read") {
+    if(method=="coverage.detail.start") fields(p,{"reset","capacity"});
+    else if(method=="coverage.detail.read") fields(p,{"offset","limit"});
+    else fields(p,{});
+    if(method!="coverage.detail.status") check_paused();
+    if(p.contains("reset")) require(p["reset"].is_boolean(),"reset must be boolean");
+    zic_state *s=pyro_rpc_instruction_coverage;
+    if(method=="coverage.detail.start") {
+      bool reset=p.value("reset",true);
+      unsigned capacity=static_cast<unsigned>(number(p.value("capacity",J(s?s->capacity:131072)),1048576,"invalid capacity"));
+      require(capacity>=256 && !(capacity&(capacity-1)),"capacity must be a power of two from 256 to 1048576");
+      require(!s || capacity==s->capacity || reset,"resizing requires reset");
+      if(!s || s->capacity!=capacity) {
+        zic_state *replacement=zic_create(capacity);
+        require(replacement!=nullptr,"coverage allocation failed");
+        zic_destroy(s);s=pyro_rpc_instruction_coverage=replacement;
+      }
+      if(reset) zic_reset(s);
+      s->enabled=1;
+    }
+    if(method=="coverage.detail.reset") zic_reset(s);
+    if(method=="coverage.detail.stop" && s) s->enabled=0;
+    J result={{"schema",1},{"format","z80-dispatch-fetched-v1"},
+      {"enabled",bool(s && s->enabled)},{"complete",bool(zic_complete(s))},
+      {"capacity",s?s->capacity:0},{"unique_tuples",s?s->unique:0},
+      {"dispatch_units",s?s->units:0},{"dropped_units",s?s->dropped:0},
+      {"capacity_failures",s?s->capacity_failures:0},{"fetch_failures",s?s->fetch_failures:0},
+      {"decision_failures",s?s->decision_failures:0},{"clock_cycles",clock_value()},
+      {"clock_bits",64},{"max_fetch_bytes",ZIC_MAX_FETCH},{"physical_mapping_certified",false}};
+    if(method=="coverage.detail.read") {
+      unsigned offset=static_cast<unsigned>(number(p.value("offset",J(0)),s?s->unique:0,"invalid offset"));
+      unsigned limit=static_cast<unsigned>(number(p.value("limit",J(256)),1024,"invalid limit"));
+      require(limit>=1,"limit must be at least one");
+      unsigned end=std::min(offset+limit,s?s->unique:0);
+      result["offset"]=offset;result["next_offset"]=end;result["entries"]=J::array();
+      const char *hex="0123456789abcdef";
+      for(unsigned i=offset;i<end;i++) {
+        const zic_row &row=s->rows[i];const zic_key &key=row.key;
+        std::string bytes;bytes.reserve(2*key.length);
+        for(unsigned n=0;n<key.length;n++){bytes+=hex[key.bytes[n]>>4];bytes+=hex[key.bytes[n]&15];}
+        result["entries"].push_back(J{{"id",i},{"pc",key.pc},{"next_pc",key.next_pc},
+          {"bytes",bytes},{"m1_mask",key.m1_mask},{"flags",key.flags},{"outcome",key.outcome},
+          {"count",row.count},{"first_dispatch",row.first_dispatch},{"last_dispatch",row.last_dispatch}});
+      }
+    }
+    return result;
+  }
   if(method=="coverage.start" || method=="coverage.stop" || method=="coverage.reset" ||
      method=="coverage.status" || method=="coverage.read") {
     if(method=="coverage.start") fields(p,{"mode","reset"}); else fields(p,{});

@@ -25,6 +25,54 @@
 
 #ifndef FUSE_Z80_MACROS_H
 #define FUSE_Z80_MACROS_H
+#include "memory_pages.h"
+
+/* Observe the values returned by existing reads, never infer operand reads
+   from their address: a data read through HL may also happen to equal PC. */
+#ifdef CORETEST
+#define Z80_READ_OPERAND(address) readbyte(address)
+#define Z80_READ_OPCODE(address) readbyte_internal(address)
+#define Z80_READ_FETCH_DATA(address) readbyte_internal(address)
+#define Z80_DETAIL_DECISION(value) (!!(value))
+#define Z80_DETAIL_FIRST(value) ((void)0)
+#define Z80_DETAIL_BEGIN(pc,value) ((void)0)
+#define Z80_DETAIL_FINISH(pc) ((void)0)
+#define Z80_DETAIL_FRAGMENT(pc,value) ((void)0)
+#else
+/* Flag 4 identifies a redispatch using a byte already fetched by the preceding
+   ignored DD/FD fragment. Its M1 bit describes that actual read's provenance. */
+#define FUSE_ZIC_REUSED_M1 4u
+static inline libspectrum_byte z80_read_operand(libspectrum_word address) {
+  libspectrum_byte value=readbyte(address);
+  return zic_fetch(pyro_rpc_instruction_coverage,address,value,0);
+}
+static inline libspectrum_byte z80_read_fetch(libspectrum_word address,int m1) {
+  libspectrum_byte value=readbyte_internal(address);
+  return zic_fetch(pyro_rpc_instruction_coverage,address,value,m1);
+}
+static inline void z80_detail_begin(libspectrum_word pc,libspectrum_byte opcode) {
+  zic_state *s=pyro_rpc_instruction_coverage;
+  zic_begin(s,pc);
+  zic_fetch(s,pc,(libspectrum_byte)pyro_rpc_detail_raw_opcode,1);
+  if(pyro_rpc_detail_reused_opcode) zic_flag(s,FUSE_ZIC_REUSED_M1);
+  if(s && s->enabled && opcode!=pyro_rpc_detail_raw_opcode) {
+    zic_flag(s,ZIC_OVERRIDE); s->malformed=1; /* Never certify an overridden fetch. */
+  }
+}
+static inline void z80_detail_fragment(libspectrum_word pc,libspectrum_byte opcode) {
+  zic_flag(pyro_rpc_instruction_coverage,ZIC_FRAGMENT);
+  zic_finish(pyro_rpc_instruction_coverage,pc);
+  pyro_rpc_detail_raw_opcode=opcode; pyro_rpc_detail_reused_opcode=1;
+}
+#define Z80_READ_OPERAND(address) z80_read_operand(address)
+#define Z80_READ_OPCODE(address) z80_read_fetch(address,1)
+#define Z80_READ_FETCH_DATA(address) z80_read_fetch(address,0)
+#define Z80_DETAIL_DECISION(value) zic_decision(pyro_rpc_instruction_coverage,(value))
+#define Z80_DETAIL_FIRST(value) do { pyro_rpc_detail_raw_opcode=(value); pyro_rpc_detail_reused_opcode=0; } while(0)
+#define Z80_DETAIL_BEGIN(pc,value) z80_detail_begin(pc,value)
+#define Z80_DETAIL_FINISH(pc) zic_finish(pyro_rpc_instruction_coverage,pc)
+#define Z80_DETAIL_FRAGMENT(pc,value) z80_detail_fragment(pc,value)
+#endif
 
 /* Macros used for accessing the registers */
 #define A   z80.af.b.h
@@ -275,8 +323,8 @@ break
 #define LD16_NNRR(regl,regh)\
 {\
   libspectrum_word ldtemp; \
-  ldtemp=readbyte(PC++);\
-  ldtemp|=readbyte(PC++) << 8;\
+  ldtemp=Z80_READ_OPERAND(PC++);\
+  ldtemp|=Z80_READ_OPERAND(PC++) << 8;\
   writebyte(ldtemp++,(regl));\
   z80.memptr.w=ldtemp;\
   writebyte(ldtemp,(regh));\
@@ -286,8 +334,8 @@ break
 #define LD16_RRNN(regl,regh)\
 {\
   libspectrum_word ldtemp; \
-  ldtemp=readbyte(PC++);\
-  ldtemp|=readbyte(PC++) << 8;\
+  ldtemp=Z80_READ_OPERAND(PC++);\
+  ldtemp|=Z80_READ_OPERAND(PC++) << 8;\
   (regl)=readbyte(ldtemp++);\
   z80.memptr.w=ldtemp;\
   (regh)=readbyte(ldtemp);\
@@ -301,7 +349,7 @@ break
 
 #define JR()\
 {\
-  libspectrum_signed_byte jrtemp = readbyte( PC ); \
+  libspectrum_signed_byte jrtemp = Z80_READ_OPERAND(PC ); \
   contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 ); \
   contend_read_no_mreq( PC, 1 ); contend_read_no_mreq( PC, 1 ); \
   contend_read_no_mreq( PC, 1 ); \
