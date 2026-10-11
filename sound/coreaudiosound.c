@@ -28,7 +28,7 @@
 #include <AudioToolbox/AudioToolbox.h>
 
 #include "machine.h"
-#include "sfifo.h"
+#include "pcm_fifo.h"
 #include "sound.h"
 #include "ui/ui.h"
 
@@ -82,13 +82,10 @@ init_audio_stats( void )
 static int
 write_audio_frames( const void *data, unsigned int frames )
 {
-  unsigned int available_frames;
-  int available_bytes = sfifo_producer_space( &sound_fifo );
-  if( available_bytes < 0 ) return available_bytes;
-  available_frames = available_bytes / device_format.mBytesPerFrame;
-  if( frames > available_frames ) frames = available_frames;
-  return sfifo_write( &sound_fifo, data,
-                      frames * device_format.mBytesPerFrame );
+  int written = pcm_fifo_write( &sound_fifo, device_format.mBytesPerFrame,
+                                data, frames );
+  return written < 0 ? written :
+    written * (int)device_format.mBytesPerFrame;
 }
 
 static unsigned int
@@ -96,10 +93,10 @@ fill_audio_frames( void *output, unsigned int requested_frames )
 {
   unsigned int available_frames = 0, delivered_frames = 0;
   unsigned int bytes_per_frame = device_format.mBytesPerFrame;
-  int available_bytes = sfifo_consumer_used( &sound_fifo );
-  int delivered_bytes;
+  int used = pcm_fifo_consumer_used( &sound_fifo, bytes_per_frame );
+  int delivered;
 
-  if( available_bytes > 0 ) available_frames = available_bytes / bytes_per_frame;
+  if( used > 0 ) available_frames = used;
   atomic_store_explicit( &audio_stats.occupancy_frames, available_frames,
                          memory_order_relaxed );
   if( available_frames > atomic_load_explicit(
@@ -110,9 +107,9 @@ fill_audio_frames( void *output, unsigned int requested_frames )
   delivered_frames = available_frames;
   if( delivered_frames > requested_frames ) delivered_frames = requested_frames;
   if( delivered_frames ) {
-    delivered_bytes = sfifo_read( &sound_fifo, output,
-                                 delivered_frames * bytes_per_frame );
-    delivered_frames = delivered_bytes > 0 ? delivered_bytes / bytes_per_frame : 0;
+    delivered = pcm_fifo_read( &sound_fifo, bytes_per_frame, output,
+                               delivered_frames );
+    delivered_frames = delivered > 0 ? delivered : 0;
   }
   if( delivered_frames < requested_frames )
     memset( (char *)output + (size_t)delivered_frames * bytes_per_frame, 0,
@@ -359,6 +356,16 @@ sound_lowlevel_init( const char *dev, int *freqptr, int *stereoptr )
 fail:
   sound_lowlevel_end();
   return 1;
+}
+
+int
+sound_lowlevel_reserve( unsigned int frames )
+{
+  int admitted;
+  while( !( admitted = pcm_fifo_producer_can_write(
+              &sound_fifo, device_format.mBytesPerFrame, frames ) ) )
+    usleep( 10000 );
+  return admitted < 0 ? admitted : 0;
 }
 
 /* Copy the frame-batched sound data to the FIFO. */

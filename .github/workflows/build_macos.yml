@@ -13,18 +13,18 @@ jobs:
       key: fuse-app
       libspectrum_ref: master
 
-  # Default build via SDL, which is easier to satisfy on current runners.
+  # Default build via SDL 2, which is easier to satisfy on current runners.
   default-ui:
     name: "Fuse Default UI (MacOS)"
     needs: [libspectrum]
     uses: ./.github/workflows/build_macos_sub.yml
     with:
       name: Default
-      dependencies: "sdl12-compat"
-      configure_params: "--with-sdl --disable-sdl2"
-      verify_ui: "sdl"
+      dependencies: "sdl2"
+      configure_params: "--with-sdl"
+      verify_ui: "sdl2"
       verify_audio: "sdl"
-      verify_other: "Using SDL: 1"
+      verify_other: "Using SDL: 2"
 
 #########################################
 ### SUPPORTED MacOS UI configurations ###
@@ -38,7 +38,7 @@ jobs:
     with:
       name: "NULL UI"
       dependencies: ""
-      configure_params: "--with-null-ui --with-audio-driver=null"
+      configure_params: "--with-null-ui --with-audio-driver=null --enable-automation"
       verify_ui: "null"
       verify_audio: "null"
       run_check: true
@@ -54,19 +54,6 @@ jobs:
       configure_params: "--with-gtk"
       verify_ui: "gtk"
       verify_other: "Using GTK 3: yes"
-
-  # SDL 1 UI + Sound
-  sdl1-ui:
-    name: "Fuse SDL 1 UI + sound (MacOS)"
-    needs: [libspectrum]
-    uses: ./.github/workflows/build_macos_sub.yml
-    with:
-      name: SDL1 UI
-      dependencies: "sdl12-compat"
-      configure_params: "--with-sdl --disable-sdl2"
-      verify_ui: "sdl"
-      verify_audio: "sdl"
-      verify_other: "Using SDL: 1"
 
   # SDL 2 UI + Sound
   sdl2-ui:

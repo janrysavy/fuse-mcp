@@ -619,31 +619,10 @@ option.
 .B \-\-full\-screen
 .RS
 Specify whether Fuse should run in full screen mode.
-This option is effective under the GTK, SDL and SDL2 UIs.
+This option is effective under the GTK and SDL2 UIs.
 .PP
 Under SDL2, Fuse uses desktop fullscreen: the current desktop display mode is
 kept and Fuse scales the emulated display to fit it.
-.RE
-.PP
-.B \-\-sdl\-fullscreen\-mode
-.I mode
-.RS
-Specify the fullscreen display mode to use under the SDL UI. This option has
-no effect under SDL2, which uses desktop fullscreen.
-.I mode
-may be one of the following:
-.RS
-.TP
-.B list
-Print the available fullscreen modes and exit.
-.TP
-.B number
-Select one of the listed fullscreen modes by its number.
-.TP
-.B WxH
-Select a fullscreen mode by width and height, for example
-.BR 1024x768 .
-.RE
 .RE
 .PP
 .B \-g
@@ -1488,17 +1467,6 @@ option;
 see there for more details.
 .RE
 .PP
-.B \-\-sdl\-fullscreen\-mode
-.I mode
-.RS
-Select a screen resolution for full screen mode under the SDL UI. Available
-values for
-.IR mode " are listed in a table, when Fuse is called with"
-.B \-\-sdl\-fullscreen\-mode
-.IR list " command line option."
-This option has no effect under SDL2, which uses desktop fullscreen.
-.RE
-.PP
 .B \-\-separation
 .I type
 .RS
@@ -1574,7 +1542,7 @@ option.
 .I device
 .RS
 Specify the sound output device to use and any options to give that
-device. If you are not using the SDL UI or using
+device. If you are not using SDL2 or using
 .I libao
 or
 .I "libasound (ALSA)"
@@ -1583,10 +1551,10 @@ then the
 .I "device"
 parameter just specifies the device to be used for sound output.
 .PP
-If you are using the SDL UI, the
+If you are using SDL2 for sound output, the
 .I "device"
-parameter allows you to specify the
-audio driver to be used (e.g. dsp, alsa, dma, esd and arts).
+parameter allows you to specify the SDL2 audio driver to be used
+(e.g. coreaudio, alsa or pulseaudio).
 .PP
 If you are using
 .I libao
@@ -1962,7 +1930,7 @@ option.
 .B \-\-statusbar
 .RS
 For the GTK and Win32 UI, enables the statusbar beneath the display. For the
-Xlib and SDL UI, enables the status icons showing whether the disk and tape are
+Xlib and SDL2 UI, enables the status icons showing whether the disk and tape are
 being accessed. Same as the General Options dialog's
 .I "Show statusbar"
 option.
@@ -2220,7 +2188,7 @@ section for details.
 .\"
 .SH "THE VARIOUS FRONT-ENDS"
 Fuse supports various front-ends, or UIs (user interfaces). The usual
-one is GTK-based, but there are also SDL, Win32, Xlib and
+one is GTK-based, but there are also SDL2, Win32, Xlib and
 framebuffer ones.
 .PP
 The important difference to note is that GTK and Win32 versions uses
@@ -2582,7 +2550,7 @@ and white television. This is effective under every Fuse user interface.
 .I "Show statusbar"
 .RS
 For the GTK and Win32 UI, enables the statusbar beneath the display. For the
-SDL UI, enables the status icons showing whether the disk and tape are
+SDL2 UI, enables the status icons showing whether the disk and tape are
 being accessed. This option has no effect for the other user
 interfaces.
 .RE
@@ -2852,7 +2820,7 @@ menu.
 .RS
 If this option is selected, Fuse will emulate a Kempston mouse interface.
 .PP
-With the SDL and SDL2 UIs, middle click (or middle button release) on the
+With the SDL2 UI, middle click (or middle button release) on the
 Spectrum display toggles mouse grab when the Kempston mouse is enabled.
 When grabbed, SDL2 uses relative mouse mode so motion is no longer limited by
 the host pointer reaching the edge of the screen.
@@ -3393,7 +3361,7 @@ section for more details.
 .I "Options, Full Screen"
 .RS
 Switch Fuse between full screen and windowed mode.
-This menu is only available under the GTK and SDL UIs.
+This menu is only available under the GTK and SDL2 UIs.
 .RE
 .PP
 .I "Options, Disk Options..."
@@ -3563,14 +3531,17 @@ up the main menu.
 .I "Machine, Reset"
 .RS
 Reset the emulated Spectrum. A soft reset preserves the active ROM and
-cartridge images loaded from a snapshot.
+cartridge images loaded from a snapshot. Timex cartridge ROM and RAM
+contents are preserved, whether loaded from a cartridge image or a snapshot.
 .RE
 .PP
 .I "Machine, Hard reset"
 .RS
 Reset the emulated Spectrum. A hard reset is equivalent to turning the
 Spectrum's power off, and then turning it back on; it reloads configured ROM
-and cartridge images.
+and Interface\ 2 cartridge images. Timex cartridge ROM is retained and
+cartridge RAM is cleared, without reopening the cartridge image. This also
+applies to Timex cartridges restored from snapshots.
 .RE
 .PP
 .I F9
@@ -4135,13 +4106,19 @@ As above, but for the emulated DISCiPLE drives.
 .RS
 Insert a cartridge into the Timex\ 2068 dock. This will cause the
 emulated machine to be changed to the TC2068 (if it wasn't already
-a 2068 variant) and reset.
+a 2068 variant) and hard reset, as if the machine had been power cycled
+to change the physical cartridge. Any previous cartridge, including one
+restored from a snapshot, is replaced. Initial RAM contents supplied by
+the new cartridge image are retained. The cartridge data is retained in memory;
+subsequent resets do not require the original image file. A soft reset
+preserves cartridge RAM contents, while a hard reset clears them.
 .RE
 .PP
 .I "Media, Cartridge, Timex Dock, Eject"
 .RS
 Remove the cartridge from the Timex\ 2068 dock. This will cause the
-emulated machine to be reset.
+emulated machine to be hard reset, as if the machine had been power cycled
+to remove the physical cartridge.
 .RE
 .PP
 .I "Media, Cartridge, Interface\ 2, Insert..."
@@ -4342,7 +4319,7 @@ this problem, the
 .RB ` \-\-no\-aspect\-hint '
 option may help.
 .PP
-If you're using the SDL UI under X11 or GTK, the window will
+If you're using the SDL2 UI under X11 or GTK, the window will
 automatically resize to be the correct size for the graphics filter
 selected.
 .\"
@@ -4355,7 +4332,7 @@ emulating machine's monitor. These filters can be used to do various
 forms of smoothing, emulation of TV scanlines and various other
 possibilities. Support for graphics filters varies between the
 different user interfaces, but there are two general classes: the GTK,
-Win32, Xlib and SDL user interfaces (and the saving of .png
+Win32, Xlib and SDL2 user interfaces (and the saving of .png
 screenshots) support `interpolating' filters which use a palette larger
 than the Spectrum's 16\ colours, while the framebuffer user interface
 currently does not support filters at all.
@@ -4366,7 +4343,7 @@ resolution. To deal with this, Fuse treats these machines as having a
 `normal' display size which is twice the size of a normal Spectrum's
 screen, leading to a different set of filters being available for
 these machines. Note that any of the double or triple-sizing filters
-are available for Timex machines only when using the SDL, Win32 or GTK
+are available for Timex machines only when using the SDL2, Win32 or GTK
 user interfaces.
 .PP
 The available filters, along with their short name used to select them

@@ -40,6 +40,7 @@
 #include "module.h"
 #include "movie.h"
 #include "peripherals/ula.h"
+#include "peripherals/dck.h"
 #include "pokefinder/pokemem.h"
 #include "rzx.h"
 #include "settings.h"
@@ -222,6 +223,10 @@ machine_select_machine( fuse_machine_info *machine, libspectrum_snap *snap )
   int width, height;
   int capabilities;
 
+  /* Preserve the pending tape interval in the old clock before clearing
+     events and replacing the machine. tape_play() rescales it on resume. */
+  if( tape_recording && tape_record_stop() ) return 1;
+  if( machine_current ) tape_stop();
   machine_current = machine;
 
   settings_set_string( &settings_current.start_machine, machine->id );
@@ -511,6 +516,7 @@ machine_reset_from_snapshot( int hard_reset, libspectrum_snap *snap )
   size_t i;
   int error;
 
+  if( tape_recording && tape_record_stop() ) return 1;
   if( hard_reset ) machine_clear_snapshot_rom_banks();
 
   /* Clear poke list (undoes effects of active pokes on Spectrum memory) */
@@ -527,6 +533,9 @@ machine_reset_from_snapshot( int hard_reset, libspectrum_snap *snap )
   machine_set_variable_timings( machine_current );
 
   memory_reset();
+
+  /* Snapshot cartridge pages replace, rather than overlay, inserted media. */
+  if( snap ) dck_discard();
 
   /* Do the machine-specific bits, including loading the ROMs */
   error = machine_current->reset( hard_reset, snap ); if( error ) return error;

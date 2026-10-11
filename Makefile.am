@@ -84,15 +84,29 @@ fuse_LDADD = \
              $(X_LIBS) \
              $(XML_LIBS)
 
-if USE_SDL1
-fuse_LDADD += $(SDL1_LIBS)
-endif
-
 if USE_SDL2
 fuse_LDADD += $(SDL2_LIBS)
 endif
 
 fuse_DEPENDENCIES =
+
+if EMSCRIPTEN
+fuse_LDFLAGS = -sUSE_SDL=2 -sASYNCIFY
+fuse_LDFLAGS += --preload-file emscripten-data@/
+fuse_DEPENDENCIES += emscripten-data.stamp
+
+emscripten-data.stamp: $(ROMS) $(lib_files) ui/widget/fuse.font
+	$(AM_V_GEN)rm -rf emscripten-data
+	$(AM_V_at)$(MKDIR_P) emscripten-data/roms emscripten-data/lib emscripten-data/ui/widget
+	$(AM_V_at)for file in $(ROMS) $(lib_files); do \
+	  $(INSTALL_DATA) $(srcdir)/$$file emscripten-data/$$file || exit 1; \
+	done
+	$(AM_V_at)$(INSTALL_DATA) ui/widget/fuse.font emscripten-data/ui/widget/fuse.font
+	$(AM_V_at)touch $@
+
+clean-local:
+	-rm -rf emscripten-data emscripten-data.stamp
+endif
 
 EXTRA_fuse_SOURCES =
 
@@ -114,10 +128,6 @@ AM_CPPFLAGS = \
               $(XML_CFLAGS) \
               -DFUSEDATADIR="\"${pkgdatadir}\"" \
               $(PNG_CFLAGS)
-
-if USE_SDL1
-AM_CPPFLAGS += $(SDL1_CFLAGS)
-endif
 
 if USE_SDL2
 AM_CPPFLAGS += $(SDL2_CFLAGS)
@@ -170,9 +180,9 @@ EXTRA_DIST = AUTHORS \
 	     m4/ax_pthread.m4 \
 	     m4/ax_string_strcasecmp.m4 \
 	     m4/pkg.m4 \
-	     m4/sdl.m4 \
 	     menu_data.dat \
 	     menu_data.pl \
+	     hacking/emscripten.md \
 	     settings.dat \
 	     settings.pl \
 	     settings-header.pl \
@@ -243,7 +253,6 @@ include ui/fb/Makefile.am
 include ui/gtk3/Makefile.am
 include ui/null/Makefile.am
 include ui/scaler/Makefile.am
-include ui/sdl/Makefile.am
 include ui/sdl2/Makefile.am
 include ui/widget/Makefile.am
 include ui/wii/Makefile.am

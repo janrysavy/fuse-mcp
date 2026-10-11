@@ -65,8 +65,6 @@ jobs:
       # Small help when copying dlls
       CYGWIN_LIBDIR: "/usr/i686-w64-mingw32/sys-root/mingw/bin/"
       
-      # In case of SDL
-      SDL_CONFIG: "/usr/i686-w64-mingw32/sys-root/mingw/bin/sdl-config"
     steps:
       - name: (1) Prepare environment
         run: |
@@ -308,9 +306,6 @@ jobs:
           
           # SDL runtime selection follows the configured UI variant.
           case "${{ inputs.verify_ui }}" in
-            sdl)
-              cp ${CYGWIN_LIBDIR}SDL.dll $DEST_DIR || true
-              ;;
             sdl2)
               cp ${CYGWIN_LIBDIR}SDL2.dll $DEST_DIR || true
               ;;
@@ -420,10 +415,6 @@ jobs:
           copy_notice_files mingw64-i686-libxml2
           copy_notice_files mingw64-i686-win-iconv
           copy_notice_files mingw64-i686-xz
-          if [[ -f "$DEST_DIR/SDL.dll" ]]; then
-            copy_notice_files mingw64-i686-SDL SDL
-          fi
-
           if [[ -f "$DEST_DIR/SDL2.dll" ]]; then
             copy_notice_files mingw64-i686-SDL2 SDL2
 

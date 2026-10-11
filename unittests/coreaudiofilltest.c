@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <AudioToolbox/AudioToolbox.h>
 #ifdef COREAUDIO_TEST_THREADS
 #include <pthread.h>
@@ -110,8 +111,24 @@ mock_stop( AudioUnit unit )
 #define AudioComponentInstanceDispose mock_dispose
 #define AudioOutputUnitStart mock_start
 #define AudioOutputUnitStop mock_stop
+static int release_frames, admission_waits;
+static int mock_sleep( useconds_t microseconds );
+#define usleep mock_sleep
 /* Include rather than duplicate the production callback and fill algorithm. */
 #include "sound/coreaudiosound.c"
+#undef usleep
+
+static int
+mock_sleep( useconds_t microseconds )
+{
+  unsigned char output[128];
+  if( !release_frames ) return usleep( microseconds );
+  CHECK( microseconds == 10000 );
+  admission_waits++;
+  CHECK( fill_audio_frames( output, release_frames ) == release_frames );
+  release_frames = 0;
+  return 0;
+}
 
 static fuse_machine_info test_machine;
 fuse_machine_info *machine_current = &test_machine;
@@ -138,6 +155,29 @@ setup_fifo( unsigned int channels, int capacity )
   device_format.mBytesPerFrame = channels * 2;
   CHECK( init_audio_stats() == 0 );
   CHECK( sfifo_init( &sound_fifo, capacity ) == 0 );
+}
+
+static void
+admission_tests( void )
+{
+  unsigned char data[128] = { 0 };
+  int channels, width, capacity;
+  for( channels = 1; channels <= 2; channels++ ) {
+    setup_fifo( channels, 31 );
+    width = channels * 2;
+    capacity = pcm_fifo_capacity( &sound_fifo, width );
+    CHECK( !sound_lowlevel_reserve( capacity ) );
+    CHECK( pcm_fifo_write( &sound_fifo, width, data, capacity ) == capacity );
+    CHECK( !sound_lowlevel_reserve( 0 ) );
+    CHECK( sound_lowlevel_reserve( capacity + 1 ) == -EINVAL );
+    release_frames = 2;
+    admission_waits = 0;
+    CHECK( !sound_lowlevel_reserve( 2 ) && admission_waits == 1 );
+    CHECK( pcm_fifo_write( &sound_fifo, width, data, 1 ) == 1 );
+    CHECK( pcm_fifo_write( &sound_fifo, width, data, 1 ) == 1 );
+    sfifo_close( &sound_fifo );
+    CHECK( sound_lowlevel_reserve( 1 ) == -ENODEV );
+  }
 }
 
 /* Timer reserves a maximum batch, not a channel-dependent byte count. */
@@ -319,6 +359,8 @@ initialization_tests( void )
     CHECK( sound_lowlevel_init( NULL, &freq, &stereo ) == 0 );
     /* Stereo capacity no longer has the duplicate channel multiplier. */
     CHECK( sound_fifo.size == 8192 );
+    CHECK( !sound_lowlevel_reserve( 20 / device_format.mChannelsPerFrame ) );
+    CHECK( !audio_output_started );
     sound_lowlevel_frame( samples, 20 );
     CHECK( audio_output_started );
     sound_lowlevel_end();
@@ -432,6 +474,7 @@ snapshot_test( void )
 int
 main( void )
 {
+  admission_tests();
   timer_capacity_tests();
   fill_tests( 1 );
   fill_tests( 2 );

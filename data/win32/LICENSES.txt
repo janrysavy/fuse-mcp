@@ -103,12 +103,6 @@ License: public-domain and LGPL-2.1+
   The corresponding notice copied from the build environment can be found in
   the 3rd-party directory.
 
-Files: SDL.dll
-Copyright: 1997-2026 Sam Lantinga and SDL contributors
-License: LGPL-2.1+
-  The corresponding notice copied from the build environment can be found in
-  the 3rd-party directory.
-
 Files: SDL2.dll
 Copyright: 1997-2026 Sam Lantinga and SDL contributors
 License: Zlib

@@ -31,7 +31,6 @@ package may include DLLs from these components:
     winpthreads
     xz / liblzma
     zlib
-    SDL
     SDL2
 
 See LICENSES.txt for copyright and license details.

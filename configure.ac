@@ -77,6 +77,25 @@ fi
 dnl Checks for programs.
 AC_PROG_CC
 AC_PROG_CXX
+AC_CACHE_CHECK([whether the compiler targets Emscripten],
+  [ac_cv_c_emscripten],
+  [AC_COMPILE_IFELSE(
+    [AC_LANG_PROGRAM([[
+#ifdef __EMSCRIPTEN__
+#else
+#error not Emscripten
+#endif
+    ]])],
+    [ac_cv_c_emscripten=yes],
+    [ac_cv_c_emscripten=no])])
+AS_IF([test "x$ac_cv_c_emscripten" = xyes], [
+  dnl Emscripten provides geteuid(), but its fixed root-like identity and
+  dnl setuid() stub do not implement meaningful Unix privilege semantics in
+  dnl the browser sandbox.
+  ac_cv_func_geteuid=no
+  EXEEXT=.html
+])
+AM_CONDITIONAL([EMSCRIPTEN], [test "x$ac_cv_c_emscripten" = xyes])
 AC_MSG_CHECKING([whether $CC supports C11])
 AC_COMPILE_IFELSE(
   [AC_LANG_SOURCE([[
@@ -283,13 +302,13 @@ dnl Check if the user wants the SDL UI
 if test -z "$UI"; then
   AC_MSG_CHECKING(whether SDL UI requested)
   AC_ARG_WITH(sdl,
-  [  --with-sdl              use SDL for user interface],
+  [  --with-sdl              use SDL 2 for user interface],
   if test "$withval" = no; then sdl_ui=no; else sdl_ui=yes; fi,
   sdl_ui=no)
   AC_MSG_RESULT($sdl_ui)
 fi
 
-dnl Check if the user prefers SDL 1 over SDL 2
+dnl Check if SDL 2 support is enabled
 AC_ARG_ENABLE(sdl2,
   AS_HELP_STRING([--disable-sdl2],[disable SDL 2 support]),
   if test "$enableval" = yes; then enable_sdl2=yes; else enable_sdl2=no; fi,
@@ -300,17 +319,7 @@ dnl Look for SDL 2
 sdl_available=no
 if test "$enable_sdl2" = yes; then
   PKG_CHECK_MODULES([SDL2], [sdl2], [sdl_available=2],
-                    [AC_MSG_WARN([SDL 2 not found, looking for SDL 1])])
-fi
-
-dnl Look for SDL 1 if SDL 2 was not found or not requested
-if test "$sdl_available" = no; then
-  SDL1_VERSION=1.2.4
-  AM_PATH_SDL($SDL1_VERSION, sdl_available=1, sdl_available=no)
-  SDL1_CFLAGS="$SDL_CFLAGS"
-  SDL1_LIBS="$SDL_LIBS"
-  AC_SUBST(SDL1_CFLAGS)
-  AC_SUBST(SDL1_LIBS)
+                    [AC_MSG_WARN([SDL 2 not found])])
 fi
 
 dnl Enable the SDL UI if all conditions are met.
@@ -322,14 +331,8 @@ if test "$sdl_ui" = yes; then
     UI=sdl2
     WIDGET=widget
     use_sdl=2
-  elif test "$sdl_available" = 1; then
-    AC_DEFINE([UI_SDL], 1, [Defined if the SDL UI in use])
-    AC_DEFINE([USE_WIDGET], 1, [Defined if we're using a widget-based UI])
-    UI=sdl
-    WIDGET=widget
-    use_sdl=1
   else
-    AC_MSG_ERROR([SDL support requested for the UI, but SDL was not found])
+    AC_MSG_ERROR([SDL 2 support requested for the UI, but SDL 2 was not found])
   fi
 fi
 
@@ -442,7 +445,6 @@ fi
 AM_CONDITIONAL(UI_FB, test "$UI" = fb)
 AM_CONDITIONAL(UI_GTK, test "$UI" = gtk3)
 AM_CONDITIONAL(UI_NULL, test "$UI" = null)
-AM_CONDITIONAL(UI_SDL, test "$UI" = sdl)
 AM_CONDITIONAL(UI_SDL2, test "$UI" = sdl2)
 AM_CONDITIONAL(UI_WII, test "$UI" = wii)
 AM_CONDITIONAL(UI_WIN32, test "$UI" = win32)
@@ -553,7 +555,7 @@ AC_CHECK_HEADER(
 dnl SDL audio
 if test "$sdl_available" != "no"; then
   dnl Default to SDL audio if we're using the SDL UI
-  if test "$UI" = sdl || test "$UI" = sdl2; then
+  if test "$UI" = sdl2; then
     audio_driver_list="sdl $audio_driver_list"
   else
     audio_driver_list="$audio_driver_list sdl"
@@ -652,11 +654,9 @@ dnl Add the necessary options for the selected audio driver
 dnl
 case $audio_driver in
   sdl)
-    if test "$sdl_available" = 2; then
-       SOUND_LIBADD='sound/sdl2sound.$(OBJEXT)' SOUND_LIBS='' sound_fifo=yes
-    else
-       SOUND_LIBADD='sound/sdlsound.$(OBJEXT)' SOUND_LIBS='' sound_fifo=yes
-    fi
+    SOUND_LIBADD='sound/sdl2sound.$(OBJEXT)' SOUND_LIBS='' sound_fifo=yes
+    AC_DEFINE([SOUND_PCM_ADMISSION], 1,
+              [Defined for exact callback PCM production admission])
     use_sdl=$sdl_available
     ;;
   directsound)
@@ -683,6 +683,8 @@ case $audio_driver in
     ;;
   coreaudio)
     SOUND_LIBADD='sound/coreaudiosound.$(OBJEXT)' SOUND_LIBS='-framework CoreAudio -framework AudioUnit' sound_fifo=yes
+    AC_DEFINE([SOUND_PCM_ADMISSION], 1,
+              [Defined for exact callback PCM production admission])
     ;;
   wii)
     SOUND_LIBADD='sound/wiisound.$(OBJEXT)' SOUND_LIBS='' sound_fifo=yes
@@ -695,6 +697,9 @@ case $audio_driver in
     AC_DEFINE([NO_SOUND], 1, [Defined if no sound code is present])
     ;;
 esac
+
+AM_CONDITIONAL(HAVE_PCM_ADMISSION,
+  test "$audio_driver" = sdl || test "$audio_driver" = coreaudio)
 
 if test "$sound_fifo" = yes; then
   AC_MSG_CHECKING([whether C11 FIFO atomics are usable])
@@ -749,17 +754,17 @@ AC_MSG_CHECKING(whether hardware joystick support requested)
 AC_MSG_RESULT($stick)
 if test "$stick" = yes; then
   case "$UI" in
-    sdl|sdl2|win32)
+    sdl2|win32)
       dnl These UIs provide their own joystick code.
       AC_DEFINE([USE_JOYSTICK], 1, [Defined if we're using hardware joysticks])
       ;;
     gtk3|xlib)
-      dnl These UIs use SDL library for handling joysticks.
+      dnl These UIs use SDL 2 for handling joysticks.
       if test "$sdl_available" != no; then
         AC_DEFINE([USE_JOYSTICK], 1, [Defined if we're using hardware joysticks])
         use_sdl=$sdl_available
       else
-        AC_MSG_WARN([No suitable SDL version found - joystick support disabled])
+        AC_MSG_WARN([SDL 2 not found - joystick support disabled])
         stick=no
       fi
       ;;
@@ -813,9 +818,6 @@ AC_MSG_CHECKING(which timer routines to use)
 if test "$automation" = yes; then
   TIMER_LIBADD='timer/null.$(OBJEXT)'
   AC_MSG_RESULT(conditional virtual timer)
-elif test "$UI" = sdl; then
-  TIMER_LIBADD='timer/sdl.$(OBJEXT)'
-  AC_MSG_RESULT(SDL)
 elif test "$UI" = sdl2; then
   TIMER_LIBADD='timer/sdl.$(OBJEXT)'
   AC_MSG_RESULT(SDL)
@@ -922,6 +924,9 @@ AC_MSG_RESULT($missing_routines)
 dnl Work out which compatibility routines to use
 AC_MSG_CHECKING(which compatibility routines to use)
 case "$host_os" in
+  emscripten)
+    COMPAT_OSNAME='unix'
+    ;;
   amigaos)
     COMPAT_OSNAME='amiga'
     ;;
@@ -952,8 +957,8 @@ AM_CONDITIONAL(COMPAT_UNIX, test "$COMPAT_OSNAME" = 'unix')
 AM_CONDITIONAL(COMPAT_WII, test "$COMPAT_OSNAME" = 'wii')
 AM_CONDITIONAL(COMPAT_WIN32, test "$COMPAT_OSNAME" = 'win32')
 
-dnl These tell the Makefile to use SDL 1 and SDL 2 flags during the build
-AM_CONDITIONAL(USE_SDL1, test "$use_sdl" = "1")
+dnl Tell the Makefile whether SDL 2 flags are needed during the build
+AM_CONDITIONAL(SDL2_JOYSTICK, test "$stick" = yes && { test "$UI" = gtk3 || test "$UI" = xlib; })
 AM_CONDITIONAL(USE_SDL2, test "$use_sdl" = "2")
 
 dnl Decide whether to install desktop and mime files

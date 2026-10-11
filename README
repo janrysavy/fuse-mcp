@@ -17,7 +17,7 @@ What Fuse does have:
   Scorpion ZS 256 emulation.
 * Runs at true Speccy speed on any computer you're likely to try it on.
 * Support for loading from .tzx files, including accelerated loading.
-* Sound (on systems supporting the Open Sound System, SDL, OpenBSD/
+* Sound (on systems supporting the Open Sound System, SDL2, OpenBSD/
   Solaris's /dev/audio, CoreAudio or PulseAudio).
 * Emulation of most of the common joysticks used on the Spectrum
   (including Kempston, Sinclair and Cursor joysticks).
@@ -51,7 +51,7 @@ Unix, Linux, BSD, etc.
 
 Required:
 
-* X, SDL or framebuffer support. If you have GTK, you'll get
+* X, SDL2 or framebuffer support. If you have GTK, you'll get
   a (much) nicer user interface under X.
 * libspectrum: this is available from
   https://fuse-emulator.sourceforge.net/libspectrum.php
@@ -78,7 +78,7 @@ macOS
 
 Windows
 
-* The Win32 and SDL UIs can be used under Windows.
+* The Win32 and SDL2 UIs can be used under Windows.
 * pthreads-win32 library will give the ability to use posix threads, needed by
   some peripherals.
 

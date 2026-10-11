@@ -41,9 +41,9 @@
    bootstrapping by redefining main. As we now allow SDL joystick code to be
    used in the GTK and Xlib UIs we need to also do the magic when that code is
    in use, feel free to look away for the next line */
-#if defined UI_SDL || defined UI_SDL2 || (defined USE_JOYSTICK && (defined UI_X || defined UI_GTK) )
+#if defined UI_SDL2 || (defined USE_JOYSTICK && (defined UI_X || defined UI_GTK) )
 #include <SDL.h>		/* Needed on MacOS X and Windows */
-#endif /* #if defined UI_SDL || defined UI_SDL2 || (defined USE_JOYSTICK && (defined UI_X || defined UI_GTK) ) */
+#endif /* SDL 2 UI or joystick support */
 
 #ifdef GEKKO
 /* #include <fat.h>
@@ -583,6 +583,7 @@ static void fuse_show_help( void )
    "\nDevelopment automation options:\n\n"
    "--automation-output <directory>       Write one-shot result artifacts here.\n"
    "--automation-frames <count>           Stop after completed machine frames.\n"
+   "--automation-sample-tstates <n>       Sample PC n T-states after the final frame (probe only).\n"
    "--automation-max-frames <count>       Deadline for a bounded run.\n"
    "--automation-until-rzx-end            Stop when RZX playback ends.\n"
    "--automation-success-pc <address>     Stop successfully at this PC.\n"

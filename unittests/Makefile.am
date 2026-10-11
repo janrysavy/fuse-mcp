@@ -35,7 +35,49 @@ endif
 check-sfifo: unittests/sfifotest
 	$(top_builddir)/unittests/sfifotest
 
-AUDIO_CHECK_TARGETS = check-sfifo
+noinst_PROGRAMS += unittests/pcm_fifotest
+unittests_pcm_fifotest_SOURCES = unittests/pcm_fifotest.c sound/sfifo.c
+unittests_pcm_fifotest_CPPFLAGS = $(AM_CPPFLAGS)
+unittests_pcm_fifotest_LDADD =
+if HAVE_PTHREAD
+unittests_pcm_fifotest_LDADD += $(PTHREAD_LIBS)
+endif
+
+check-pcm-fifo: unittests/pcm_fifotest
+	$(top_builddir)/unittests/pcm_fifotest
+
+noinst_PROGRAMS += unittests/blippreviewtest
+unittests_blippreviewtest_SOURCES = unittests/blippreviewtest.c sound/blipbuffer.c
+unittests_blippreviewtest_CPPFLAGS = $(AM_CPPFLAGS)
+unittests_blippreviewtest_LDADD = -lm
+check-blip-preview: unittests/blippreviewtest
+	$(top_builddir)/unittests/blippreviewtest
+
+AUDIO_CHECK_TARGETS = check-sfifo check-pcm-fifo check-blip-preview
+
+if HAVE_PCM_ADMISSION
+noinst_PROGRAMS += unittests/soundadmissiontest
+unittests_soundadmissiontest_SOURCES = unittests/soundadmissiontest.c \
+        sound/sfifo.c sound/blipbuffer.c sound/ay_engine.c \
+        sound/source_synths.c sound/output_mixer.c sound/dc_filter.c \
+        sound/speaker_filter.c sound/tv_filter.c sound/ula_filter.c
+unittests_soundadmissiontest_CPPFLAGS = $(AM_CPPFLAGS)
+unittests_soundadmissiontest_LDADD = $(LIBSPECTRUM_LIBS) -lm
+check-sound-admission: unittests/soundadmissiontest
+	$(top_builddir)/unittests/soundadmissiontest
+
+AUDIO_CHECK_TARGETS += check-sound-admission
+endif
+
+if USE_SDL2
+noinst_PROGRAMS += unittests/sdl2soundtest
+unittests_sdl2soundtest_SOURCES = unittests/sdl2soundtest.c sound/sfifo.c
+unittests_sdl2soundtest_CPPFLAGS = $(AM_CPPFLAGS)
+unittests_sdl2soundtest_LDADD = $(SDL2_LIBS)
+check-sdl2sound: unittests/sdl2soundtest
+	$(top_builddir)/unittests/sdl2soundtest
+AUDIO_CHECK_TARGETS += check-sdl2sound
+endif
 
 if HAVE_COREAUDIO
 noinst_PROGRAMS += unittests/coreaudiofilltest

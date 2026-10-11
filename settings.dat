@@ -28,6 +28,8 @@
 # <short option>,
 # <name on command line>, (defaults to <settings_info name> =~ s/_/-/g)
 # <name in config file>, (defaults to <command line> =~ s/-//g)
+# <deprecated name on command line>,
+# <deprecated name in config file>,
 
 emulation_speed, numeric, 100,, speed
 frame_rate, numeric, 1,, rate
@@ -203,7 +205,6 @@ printer_text_filename, string, "printout.txt",, textfile
 aspect_hint, boolean, 1
 fb_mode, numeric, 320, 'v', fbmode
 svga_modes, null, 0
-sdl_fullscreen_mode, string, NULL
 doublescan_mode, numeric, 1, 'D', doublescan-mode
 
 start_scaler_mode, string, "2x", 'g', graphics-filter

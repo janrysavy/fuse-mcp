@@ -28,7 +28,8 @@ typedef struct automation_condition { int present; libspectrum_word address;
 
 typedef struct automation_scenario { char *output_directory;
                                      unsigned long maximum_frames,
-                                                   disk_idle_frames;
+                                                   disk_idle_frames,
+                                                   sample_tstates;
                                      int until_rzx_end, until_disk_idle,
                                          capture_screen, capture_audio;
                                      automation_condition success, failure;
@@ -65,6 +66,7 @@ int automation_set_frame_limit( const char *frames );
 void automation_set_until_rzx_end( void );
 void automation_set_until_disk_idle( void );
 int automation_set_disk_idle_frames( const char *frames );
+int automation_set_sample_tstates( const char *tstates );
 void automation_set_capture_screen( void );
 void automation_set_capture_audio( void );
 int automation_capture_screen_enabled( void );

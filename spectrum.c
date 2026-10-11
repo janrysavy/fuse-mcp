@@ -45,6 +45,7 @@
 #include "sound.h"
 #include "spectrum.h"
 #include "tape.h"
+#include "tape_internals.h"
 #include "timer/timer.h"
 #include "ui/ui.h"
 #include "ui/uijoystick.h"
@@ -148,6 +149,7 @@ spectrum_frame( void )
   frame_length = rzx_playback ? tstates
 			      : machine_current->timings.tstates_per_frame;
 
+  tape_record_frame( frame_length );
   event_frame( frame_length );
   debugger_breakpoint_reduce_tstates( frame_length );
   tstates -= frame_length;

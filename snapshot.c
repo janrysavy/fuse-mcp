@@ -105,7 +105,8 @@ snapshot_copy_from( libspectrum_snap *snap )
 		libspectrum_machine_name( machine ) );
     }
   } else {
-    machine_reset_from_snapshot( 0, snap );
+    error = machine_reset_from_snapshot( 0, snap );
+    if( error ) return error;
   }
 
 

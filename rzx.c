@@ -46,6 +46,7 @@
 #include "rzx.h"
 #include "rzx_internal.h"
 #include "settings.h"
+#include "tape.h"
 #include "snapshot.h"
 #include "timer/timer.h"
 #include "ui/ui.h"
@@ -176,7 +177,7 @@ int rzx_start_playback( const char *filename, int check_snapshot )
   libspectrum_error libspec_error; int error;
   libspectrum_snap* snap;
 
-  if( rzx_recording ) return 1;
+  if( rzx_recording || tape_recording ) return 1;
 
   rzx = libspectrum_rzx_alloc();
 
@@ -232,6 +233,7 @@ rzx_start_playback_from_buffer_with_snapshot_check(
   int error;
   libspectrum_snap* snap;
 
+  if( tape_recording ) return 1;
   if( rzx_recording ) return 0;
 
   rzx = libspectrum_rzx_alloc();

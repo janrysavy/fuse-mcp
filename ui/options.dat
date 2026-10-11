@@ -63,9 +63,7 @@ Checkbox, RS-232 (h)andshake, rs232_handshake, INPUT_KEY_h
 Checkbox, Raw Sinclair(N)ET, raw_s_net, INPUT_KEY_n
 #endif
 Checkbox, Black and white T(V), bw_tv, INPUT_KEY_v
-#ifdef UI_SDL
-Checkbox, Full (s)creen, full_screen, INPUT_KEY_s
-#elif defined UI_SDL2
+#ifdef UI_SDL2
 Checkbox, Full (s)creen, full_screen, INPUT_KEY_s
 #elif defined UI_GTK
 Checkbox, Full (s)creen, full_screen, INPUT_KEY_s

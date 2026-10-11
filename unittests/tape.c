@@ -25,10 +25,15 @@
 
 #include "compat.h"
 #include "event.h"
+#include "fuse.h"
 #include "machine.h"
 #include "memory_pages.h"
+#include "periph.h"
+#include "peripherals/ula.h"
 #include "rzx.h"
 #include "settings.h"
+#include "snapshot.h"
+#include "spectrum.h"
 #include "tape.h"
 #include "tape_internals.h"
 #include "utils.h"
@@ -420,40 +425,317 @@ trap_load_unittest( void )
 static int
 tape_record_unittest( void )
 {
-  libspectrum_byte encoded[5];
-  libspectrum_byte *buffer;
-  libspectrum_dword size = 8;
-  libspectrum_tape *test_tape;
+  libspectrum_tape *test_tape, *read_back;
   libspectrum_tape_block *block;
+  libspectrum_byte *buffer = NULL;
+  libspectrum_dword saved_time = tstates;
+  libspectrum_dword saved_speed = machine_current->timings.processor_speed;
+  libspectrum_byte saved_ula = ula_last_byte();
   int saved_modified = tape_modified;
-  int error = 0;
+  int error = 0, high, model;
+  size_t length, i;
 
-  error |= tape_record_encode( encoded, 0, 0xff ) != 1 ||
-           encoded[0] != 0xff;
-  error |= tape_record_encode( encoded, 0, 0x100 ) != 5 ||
-           encoded[0] != 0 || encoded[1] != 0 || encoded[2] != 1 ||
-           encoded[3] != 0 || encoded[4] != 0;
-  error |= tape_record_encode( encoded, 0, 0x12345678 ) != 5 ||
-           encoded[1] != 0x78 || encoded[2] != 0x56 ||
-           encoded[3] != 0x34 || encoded[4] != 0x12;
+  for( model = 0; model < 2; model++ ) {
+    libspectrum_dword speed = model ? 3546900 : 3500000;
+    machine_current->timings.processor_speed = speed;
+    for( high = 0; high < 2; high++ ) {
+      libspectrum_qword total = 0, expected_total = 0;
+      libspectrum_tape_edge edge;
+      const libspectrum_dword intervals[] = { 4, 7, 70915, 200000, 19 };
+      test_tape = libspectrum_tape_alloc();
+      read_back = libspectrum_tape_alloc();
+      tape_record_set_tape( test_tape );
+      tstates = 0;
+      writeport_internal( 0xfe, high ? ULA_PORT_MIC_BIT : 0 );
+      tape_record_start();
+      tape_record_start(); /* idempotent */
+      for( i = 0; i < 4; i++ ) {
+        tstates += intervals[i];
+        /* A non-MIC write must not split the interval. */
+        writeport_internal( 0xfe, ula_last_byte() ^ 1 );
+        writeport_internal( 0xfe, ula_last_byte() ^ ULA_PORT_MIC_BIT );
+        /* Exercise timestamp rebasing with different frame lengths. This
+           tests bookkeeping, not recording during RZX (which is blocked). */
+        tape_record_frame( tstates );
+        tstates = 0;
+      }
+      tstates += intervals[4];
+      error |= tape_record_stop();
+      error |= tape_record_stop();
+      block = libspectrum_tape_current_block( test_tape );
+      error |= !block || libspectrum_tape_block_type( block ) !=
+                        LIBSPECTRUM_TAPE_BLOCK_PULSE_SEQUENCE;
+      length = 0;
+      buffer = NULL;
+      error |= libspectrum_tape_write( &buffer, &length, test_tape,
+                                        LIBSPECTRUM_ID_TAPE_PZX );
+      if( buffer ) {
+        error |= libspectrum_tape_read( read_back, buffer, length,
+                                       LIBSPECTRUM_ID_TAPE_PZX, NULL );
+        libspectrum_free( buffer );
+      } else error = 1;
+      for( i = 0; i < 5; i++ ) {
+        error |= libspectrum_tape_get_next_edge( &edge, read_back );
+        expected_total += intervals[i];
+        total += edge.tstates;
+        error |= total != expected_total * 3500000 / speed;
+        error |= edge.level != ( high ^ ( i & 1 ) );
+      }
+      libspectrum_tape_free( read_back );
+      libspectrum_tape_free( test_tape );
+    }
+  }
 
-  buffer = libspectrum_new( libspectrum_byte, size );
-  if( !buffer ) return 1;
-  tape_record_ensure_capacity( &buffer, &size, 3 );
-  error |= size != 16;
-  libspectrum_free( buffer );
-
+  /* A hold longer than PZX's 31-bit duration must not create extra edges. */
+  machine_current->timings.processor_speed = 3500000;
   test_tape = libspectrum_tape_alloc();
-  if( !test_tape ) return 1;
   tape_record_set_tape( test_tape );
+  tstates = 0;
+  writeport_internal( 0xfe, ULA_PORT_MIC_BIT );
   tape_record_start();
+  tape_record_frame( 0x80000000 );
+  tstates = 100;
+  writeport_internal( 0xfe, 0 );
+  tstates += 5;
+  error |= tape_record_stop();
+  read_back = libspectrum_tape_alloc();
+  buffer = NULL;
+  length = 0;
+  error |= libspectrum_tape_write( &buffer, &length, test_tape,
+                                  LIBSPECTRUM_ID_TAPE_PZX );
+  if( buffer ) {
+    error |= libspectrum_tape_read( read_back, buffer, length,
+                                   LIBSPECTRUM_ID_TAPE_PZX, NULL );
+    libspectrum_free( buffer );
+  } else error = 1;
+  {
+    libspectrum_tape_edge edge;
+    const libspectrum_dword expected[] = { 0x7fffffff, 101, 5 };
+    for( i = 0; i < 3; i++ ) {
+      error |= libspectrum_tape_get_next_edge( &edge, read_back );
+      error |= edge.tstates != expected[i] || edge.level != ( i < 2 );
+    }
+  }
+  libspectrum_tape_free( test_tape );
+
+  libspectrum_tape_free( read_back );
+
+  /* Grow the capture buffer and coalesce a long train of equal pulses. */
+  test_tape = libspectrum_tape_alloc();
+  tape_record_set_tape( test_tape );
+  writeport_internal( 0xfe, 0 );
+  tape_record_start();
+  for( i = 0; i < 2000; i++ ) {
+    tstates += 2;
+    writeport_internal( 0xfe, ula_last_byte() ^ ULA_PORT_MIC_BIT );
+  }
+  tstates += 3;
   error |= tape_record_stop();
   block = libspectrum_tape_current_block( test_tape );
-  error |= !block || libspectrum_tape_block_data_length( block ) != 1 ||
-           libspectrum_tape_block_data( block )[0] != 1;
+  error |= libspectrum_tape_block_count( block ) != 1 ||
+           libspectrum_tape_block_pulse_lengths( block, 0 ) != 2 ||
+           libspectrum_tape_block_pulse_repeats( block, 0 ) != 2000;
+  libspectrum_tape_free( test_tape );
+
+  /* Starting and stopping without elapsed time creates no bogus pulse. */
+  test_tape = libspectrum_tape_alloc();
+  tape_record_set_tape( test_tape );
+  tape_record_start();
+  error |= tape_record_stop() || libspectrum_tape_present( test_tape );
   libspectrum_tape_free( test_tape );
   tape_record_set_tape( tape );
+  machine_current->timings.processor_speed = saved_speed;
+  tstates = saved_time;
+  writeport_internal( 0xfe, saved_ula );
   tape_modified = saved_modified;
+  return error;
+}
+
+static int
+tape_record_lifecycle_unittest( void )
+{
+  libspectrum_tape *saved_tape = tape;
+  libspectrum_machine saved_machine = machine_current->machine;
+  int saved_modified = tape_modified;
+  int error = 0, action;
+  for( action = 0; action < 4; action++ ) {
+    libspectrum_tape_block *block;
+    libspectrum_snap *snap = NULL;
+    tape = libspectrum_tape_alloc();
+    tape_record_set_tape( tape );
+    if( action == 2 ) {
+      snap = libspectrum_snap_alloc();
+      error |= snapshot_copy_to( snap );
+    }
+    writeport_internal( 0xfe, ULA_PORT_MIC_BIT );
+    tape_record_start();
+    tstates += 100;
+    if( action == 0 ) error |= machine_reset( 0 );
+    else if( action == 1 ) error |= machine_select( LIBSPECTRUM_MACHINE_128 );
+    else if( action == 2 ) error |= snapshot_copy_from( snap );
+    else error |= tape_close();
+    error |= tape_recording;
+    block = libspectrum_tape_current_block( tape );
+    if( action == 3 ) error |= libspectrum_tape_present( tape );
+    else error |= !block;
+    if( block ) {
+      error |= libspectrum_tape_block_type( block ) != LIBSPECTRUM_TAPE_BLOCK_PAUSE;
+      error |= libspectrum_tape_block_level( block ) != 1;
+      error |= libspectrum_tape_block_pause_tstates( block ) == 0;
+    }
+    if( snap ) libspectrum_snap_free( snap );
+    libspectrum_tape_free( tape );
+    tape = saved_tape;
+    tape_record_set_tape( tape );
+  }
+  error |= machine_select( saved_machine );
+  tape_modified = saved_modified;
+  return error;
+}
+
+/* Execute the real CPU/event paths, with a bounded deadline and a DI/HALT
+   return stub. Poll events only bound observation latency; they do not
+   manufacture tape edges or replace normal frame processing. */
+static int
+run_rom_tape_routine( libspectrum_word pc )
+{
+  static int poll_event = -1;
+  unsigned int steps;
+  libspectrum_dword first_frame = spectrum_get_frame_count();
+  if( poll_event == -1 ) poll_event = event_register( NULL, "ROM tape test poll" );
+  writebyte_internal( 0x9000, 0xf3 ); /* DI */
+  writebyte_internal( 0x9001, 0x76 ); /* HALT */
+  SP = 0xaffc;
+  writebyte_internal( SP, 0x00 );
+  writebyte_internal( SP + 1, 0x90 );
+  PC = pc;
+  z80.halted = z80.iff1 = z80.iff2 = 0;
+  for( steps = 0; steps < 5000000 &&
+                  spectrum_get_frame_count() - first_frame < 1200; steps++ ) {
+    event_add( tstates + 512, poll_event );
+    z80_do_opcodes();
+    event_do_events();
+    event_remove_type( poll_event );
+    if( z80.halted && PC == 0x9001 ) return 0;
+  }
+  printf( "ROM tape routine %04x timed out at PC=%04x tstates=%u BC=%04x HL=%04x RZX=%d/%d\n",
+          pc, PC, tstates, BC, HL, rzx_playback, rzx_recording );
+  return 1;
+}
+
+static int
+tape_record_rom_roundtrip_unittest( void )
+{
+  static const libspectrum_byte payload[] = {
+    0x00, 0xff, 0x55, 0xaa, 0x01, 0x80, 0xfe, 0x7f,
+    0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10
+  };
+  libspectrum_snap *saved_snapshot = libspectrum_snap_alloc();
+  libspectrum_tape *saved_tape = tape, *captured = NULL, *loaded = NULL;
+  libspectrum_byte *buffer = NULL;
+  size_t length, i;
+  int saved_traps = settings_current.tape_traps;
+  int saved_acceleration = settings_current.accelerate_loader;
+  int saved_detection = settings_current.detect_loader;
+  int saved_fastload = settings_current.fastload;
+  int saved_modified = tape_modified;
+  int error = snapshot_copy_to( saved_snapshot ), model;
+  settings_current.tape_traps = settings_current.accelerate_loader = 0;
+  settings_current.detect_loader = settings_current.fastload = 0;
+  for( model = 0; model < 2 && !error; model++ ) {
+    error = machine_select( model ? LIBSPECTRUM_MACHINE_128 : LIBSPECTRUM_MACHINE_48 );
+    if( error ) break;
+    if( model ) writeport_internal( 0x7ffd, 0x10 ); /* 128K's 48 BASIC ROM */
+    captured = libspectrum_tape_alloc();
+    loaded = libspectrum_tape_alloc();
+    tape = captured;
+    tape_record_set_tape( captured );
+    for( i = 0; i < sizeof( payload ); i++ )
+      writebyte_internal( 0x8000 + i, payload[i] );
+    IX = 0x8000;
+    DE = sizeof( payload );
+    IY = 0x5c3a;
+    AF = 0xff00;
+    tape_record_start();
+    error |= run_rom_tape_routine( 0x04c2 ); /* SA-BYTES */
+    error |= tape_record_stop();
+    /* Capturing real MIC transitions must not have inserted a ROM data
+       block through a trap. */
+    if( !error ) {
+      libspectrum_tape_block *block = libspectrum_tape_current_block( captured );
+      error |= !block;
+      if( block ) error |= libspectrum_tape_block_type( block ) !=
+                           LIBSPECTRUM_TAPE_BLOCK_PULSE_SEQUENCE;
+    }
+    length = 0;
+    buffer = NULL;
+    if( !error ) error = libspectrum_tape_write( &buffer, &length, captured,
+                                                LIBSPECTRUM_ID_TAPE_PZX );
+    if( !error ) error = libspectrum_tape_read( loaded, buffer, length,
+                                               LIBSPECTRUM_ID_TAPE_PZX, NULL );
+    libspectrum_free( buffer );
+    buffer = NULL;
+    tape = loaded;
+    tape_record_set_tape( loaded );
+    for( i = 0; i < sizeof( payload ); i++ ) writebyte_internal( 0x8000 + i, 0 );
+    IX = 0x8000;
+    DE = sizeof( payload );
+    AF = 0xff01; /* expected flag FF, carry set selects LOAD rather than VERIFY */
+    if( !error ) error = tape_play( 0 );
+    if( !error ) error = run_rom_tape_routine( 0x0556 ); /* LD-BYTES */
+    if( !error ) {
+      error |= !( F & 1 ) || DE != 0 || IX != 0x8000 + sizeof( payload );
+      for( i = 0; i < sizeof( payload ); i++ )
+        error |= readbyte_internal( 0x8000 + i ) != payload[i];
+    }
+    tape_stop();
+    libspectrum_tape_free( captured );
+    libspectrum_tape_free( loaded );
+    captured = loaded = NULL;
+    tape = saved_tape;
+    tape_record_set_tape( tape );
+  }
+  tape = saved_tape;
+  tape_record_set_tape( tape );
+  error |= snapshot_copy_from( saved_snapshot );
+  libspectrum_snap_free( saved_snapshot );
+  settings_current.tape_traps = saved_traps;
+  settings_current.accelerate_loader = saved_acceleration;
+  settings_current.detect_loader = saved_detection;
+  settings_current.fastload = saved_fastload;
+  tape_modified = saved_modified;
+  if( error ) printf( "ROM SAVE/PZX/LOAD round trip failed\n" );
+  return error;
+}
+
+static int
+tape_record_rzx_exclusion_unittest( void )
+{
+  int saved_playback = rzx_playback, saved_recording = rzx_recording;
+  libspectrum_tape *target = libspectrum_tape_alloc();
+  int error = 0;
+  tape_record_set_tape( target );
+  rzx_playback = 1;
+  rzx_recording = 0;
+  tape_record_start();
+  error |= tape_recording;
+  rzx_playback = 0;
+  rzx_recording = 1;
+  tape_record_start();
+  error |= tape_recording;
+  rzx_recording = 0;
+  tape_record_start();
+  error |= !tape_recording;
+  /* Reverse direction must reject before opening/parsing anything. */
+  error |= !rzx_start_playback( "missing", 1 );
+  error |= !rzx_start_playback_from_buffer( NULL, 0 );
+  error |= !rzx_start_recording( "unused.rzx", 1 );
+  error |= !rzx_continue_recording( "missing" );
+  error |= tape_record_stop();
+  rzx_playback = saved_playback;
+  rzx_recording = saved_recording;
+  libspectrum_tape_free( target );
+  tape_record_set_tape( tape );
   return error;
 }
 
@@ -473,6 +755,10 @@ tape_edge_unittest( void )
   libspectrum_tape_edge edge = { 0 };
   libspectrum_tape_block *rom, *pause;
   libspectrum_machine saved_machine = machine_current->machine;
+  libspectrum_dword saved_speed = machine_current->timings.processor_speed;
+  libspectrum_dword total, expected;
+  unsigned int i;
+  int saved_playing = tape_playing;
   int saved_pending = tape_stop_pending;
   int saved_blocked = tape_autoplay_blocked;
   int saved_autoplay = tape_autoplay;
@@ -519,6 +805,7 @@ tape_edge_unittest( void )
   error |= tape_microphone != LIBSPECTRUM_TAPE_SIGNAL_HIGH;
 
   event_remove_type( tape_edge_event );
+  machine_current->timings.processor_speed = 3500000;
   edge.tstates = 123;
   edge.flags = LIBSPECTRUM_TAPE_FLAGS_LENGTH_SHORT;
   edge_test_tstates = 0;
@@ -527,8 +814,60 @@ tape_edge_unittest( void )
   error |= edge_test_tstates != 1123;
   event_remove_type( tape_edge_event );
 
+  /* Conversion belongs at scheduling, for both ordinary and accelerated
+     edges. Carry fractions across block boundaries and zero-time edges. */
+  machine_current->timings.processor_speed = 3546900;
+  total = 0;
+  edge.tstates = 123;
+  for( i = 0; i < 10000; i++ ) {
+    tape_schedule_edge( total, &edge, i & 1 );
+    event_foreach( capture_tape_edge_event, NULL );
+    total = edge_test_tstates;
+    event_remove_type( tape_edge_event );
+  }
+  expected = (libspectrum_qword)123 * 10000 * 3546900 / 3500000;
+  error |= total != expected;
+  edge.tstates = 0;
+  tape_schedule_edge( total, &edge, 0 );
+  event_foreach( capture_tape_edge_event, NULL );
+  error |= edge_test_tstates != total;
+  event_remove_type( tape_edge_event );
+
+  /* A one-second pause has the same physical duration at either clock. */
+  machine_current->timings.processor_speed = 3500000;
+  edge.tstates = 3500000;
+  tape_schedule_edge( 1000, &edge, 0 );
+  event_foreach( capture_tape_edge_event, NULL );
+  error |= edge_test_tstates != 3501000;
+  event_remove_type( tape_edge_event );
+  machine_current->timings.processor_speed = 3546900;
+  tape_schedule_edge( 1000, &edge, 0 );
+  event_foreach( capture_tape_edge_event, NULL );
+  error |= edge_test_tstates != 3547900;
+
+  /* Stop/resume must not convert an already scheduled interval again. */
+  tape_playing = 1;
+  tape_stop();
+  tape_play( 0 );
+  event_foreach( capture_tape_edge_event, NULL );
+  error |= edge_test_tstates != 3547900;
+  tape_stop();
+  event_remove_type( tape_edge_event );
+
+  /* Changing clock while stopped rescales the saved partial interval. */
+  machine_current->timings.processor_speed = 3500000;
+  tape_play( 0 );
+  event_foreach( capture_tape_edge_event, NULL );
+  expected = tstates + (libspectrum_qword)(3547900 - tstates) *
+                       3500000 / 3546900;
+  error |= edge_test_tstates != expected;
+  tape_stop();
+  event_remove_type( tape_edge_event );
+
 done:
   machine_current->machine = saved_machine;
+  machine_current->timings.processor_speed = saved_speed;
+  tape_playing = saved_playing;
   tape_stop_pending = saved_pending;
   tape_autoplay_blocked = saved_blocked;
   tape_autoplay = saved_autoplay;
@@ -593,7 +932,8 @@ tape_select_rewind_write_unittest( void )
   libspectrum_tape_block_set_data_length( rom, 2 );
   libspectrum_tape_block_set_data( rom, data );
   libspectrum_tape_block_set_pause_tstates( rom, 3500000 );
-  libspectrum_tape_block_set_pause_tstates( pause, 1 );
+  libspectrum_tape_block_set_pause( pause, 1 );
+  libspectrum_tape_block_set_level( pause, 0 );
   if( libspectrum_tape_append_block( test_tape, rom ) ) {
     libspectrum_tape_block_free( rom );
     libspectrum_tape_block_free( pause );
@@ -720,6 +1060,9 @@ tape_unittest( void )
   if( !error ) error = tape_block_details_unittest();
   if( !error ) error = trap_load_unittest();
   if( !error ) error = tape_record_unittest();
+  if( !error ) error = tape_record_lifecycle_unittest();
+  if( !error ) error = tape_record_rzx_exclusion_unittest();
+  if( !error ) error = tape_record_rom_roundtrip_unittest();
   if( !error ) error = tape_edge_unittest();
   if( !error ) error = tape_select_rewind_write_unittest();
 

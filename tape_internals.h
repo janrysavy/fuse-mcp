@@ -33,10 +33,7 @@ void tape_update_microphone( const libspectrum_tape_edge *edge );
 
 void tape_record_init( libspectrum_tape *current_tape );
 void tape_record_set_tape( libspectrum_tape *current_tape );
-int tape_record_encode( libspectrum_byte *buffer, libspectrum_dword used,
-                        int count );
-void tape_record_ensure_capacity( libspectrum_byte **buffer,
-                                  libspectrum_dword *size,
-                                  libspectrum_dword used );
+void tape_record_edge( int level );
+void tape_record_frame( libspectrum_dword frame_length );
 
 #endif

@@ -284,6 +284,20 @@ sound_frame( void )
   if( !sound_enabled )
     return;
 
+#ifdef SOUND_PCM_ADMISSION
+  if( settings_current.sound ) {
+    long frames = blip_buffer_samples_after(
+                    left_buf, machine_current->timings.tstates_per_frame );
+    if( frames > sound_framesiz ) frames = sound_framesiz;
+    /* Source events already accumulated during emulation change amplitudes,
+       not this timeline. Admit before frame-end rendering or extraction. */
+    if( frames < 0 || sound_lowlevel_reserve( frames ) < 0 ) {
+      ui_error( UI_ERROR_ERROR, "Cannot admit audio production batch" );
+      fuse_abort();
+    }
+  }
+#endif
+
   sound_update_source_routes();
   sp0256_do_frame();
 
@@ -315,6 +329,5 @@ sound_frame( void )
 
   if( movie_recording )
       movie_add_sound( samples, count );
-  ay_engine_end_frame();
 }
 

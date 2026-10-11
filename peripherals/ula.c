@@ -43,6 +43,7 @@
 #include "sound.h"
 #include "spectrum.h"
 #include "tape.h"
+#include "tape_internals.h"
 #include "ula.h"
 
 static libspectrum_byte last_byte;
@@ -199,6 +200,8 @@ ula_read( libspectrum_word port, libspectrum_byte *attached )
 static void
 ula_write( libspectrum_word port GCC_UNUSED, libspectrum_byte b )
 {
+  if( ( last_byte ^ b ) & ULA_PORT_MIC_BIT )
+    tape_record_edge( b & ULA_PORT_MIC_BIT );
   last_byte = b;
 
   display_set_lores_border( b & ULA_PORT_BORDER_BITS );

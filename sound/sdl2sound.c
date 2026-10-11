@@ -16,7 +16,7 @@
 #include <SDL.h>
 
 #include "settings.h"
-#include "sfifo.h"
+#include "pcm_fifo.h"
 #include "sound.h"
 #include "ui/ui.h"
 
@@ -29,6 +29,8 @@ sfifo_t sound_fifo;
 
 static SDL_AudioDeviceID audio_device;
 static int audio_output_started;
+/* Immutable while the device is open; obtained callback PCM geometry. */
+static unsigned int audio_channels, bytes_per_frame;
 
 int
 sound_lowlevel_init( const char *device, int *freqptr, int *stereoptr )
@@ -37,6 +39,11 @@ sound_lowlevel_init( const char *device, int *freqptr, int *stereoptr )
   int error;
   float hz;
   int sound_framesiz;
+
+  if( audio_device || sound_fifo.buffer ) {
+    ui_error( UI_ERROR_ERROR, "Previous SDL audio output has not been closed" );
+    return 1;
+  }
 
   if( device ) {
     error = SDL_setenv( "SDL_AUDIODRIVER", device, 1 );
@@ -82,15 +89,29 @@ sound_lowlevel_init( const char *device, int *freqptr, int *stereoptr )
     return 1;
   }
 
+  /* received describes callback PCM, not necessarily the hardware format.
+     SDL may convert internally, but Fuse supplies only native signed 16-bit
+     interleaved mono or stereo. Do not infer stereo from arbitrary channels. */
+  if( received.format != AUDIO_S16SYS ||
+      ( received.channels != 1 && received.channels != 2 ) ||
+      received.freq <= 0 ) {
+    SDL_CloseAudioDevice( audio_device );
+    audio_device = 0;
+    settings_current.sound = 0;
+    ui_error( UI_ERROR_ERROR, "Unsupported SDL audio PCM specification" );
+    return 1;
+  }
+  audio_channels = received.channels;
+  bytes_per_frame = audio_channels * sizeof( libspectrum_signed_word );
   *freqptr = received.freq;
-  *stereoptr = received.channels == 1 ? 0 : 1;
+  *stereoptr = audio_channels == 2;
 
   sound_framesiz = *freqptr / hz;
-  sound_framesiz <<= 1;
 
+  /* Preserve the historical byte allocation (including its extra byte) and
+     sfifo rounding: physical capacity remains the buffering limit. */
   if( ( error = sfifo_init( &sound_fifo, NUM_FRAMES
-                            * received.channels
-                            * sound_framesiz + 1 ) ) ) {
+                            * bytes_per_frame * sound_framesiz + 1 ) ) ) {
     SDL_CloseAudioDevice( audio_device );
     audio_device = 0;
     ui_error( UI_ERROR_ERROR, "Problem initialising sound fifo: %s",
@@ -116,26 +137,41 @@ sound_lowlevel_end( void )
 
   if( SDL_WasInit( SDL_INIT_AUDIO ) ) SDL_QuitSubSystem( SDL_INIT_AUDIO );
 
-  sfifo_flush( &sound_fifo );
   sfifo_close( &sound_fifo );
+  audio_output_started = 0;
+  audio_channels = bytes_per_frame = 0;
+}
+
+int
+sound_lowlevel_reserve( unsigned int frames )
+{
+  int admitted;
+  while( !( admitted = pcm_fifo_producer_can_write(
+              &sound_fifo, bytes_per_frame, frames ) ) )
+    SDL_Delay( 10 );
+  return admitted < 0 ? admitted : 0;
 }
 
 void
 sound_lowlevel_frame( libspectrum_signed_word *data, int len )
 {
   int i = 0;
-  libspectrum_signed_byte *bytes = (libspectrum_signed_byte *)data;
+  const char *bytes = (const char *)data;
 
-  len <<= 1;
+  if( len < 0 || !audio_channels || len % audio_channels ) {
+    ui_error( UI_ERROR_ERROR, "Invalid SDL audio sample count" );
+    return;
+  }
+  len /= audio_channels;
 
   while( len ) {
-    if( ( i = sfifo_write( &sound_fifo, bytes, len ) ) < 0 ) {
+    if( ( i = pcm_fifo_write( &sound_fifo, bytes_per_frame, bytes, len ) ) < 0 ) {
       break;
     } else if( !i ) {
       SDL_Delay( 10 );
     }
 
-    bytes += i;
+    bytes += i * bytes_per_frame;
     len -= i;
   }
 
@@ -150,20 +186,22 @@ sound_lowlevel_frame( libspectrum_signed_word *data, int len )
   }
 }
 
-#ifndef MIN
-#define MIN( a, b ) ( ( ( a ) < ( b ) ) ? ( a ) : ( b ) )
-#endif
-
 static void
 sdl2write( void *userdata GCC_UNUSED, Uint8 *stream, int len )
 {
-  int f;
+  int delivered;
 
-  len = MIN( len, sfifo_consumer_used( &sound_fifo ) );
-  len &= sound_stereo_ay ? 0xfffc : 0xfffe;
-
-  while( ( f = sfifo_read( &sound_fifo, stream, len ) ) > 0 ) {
-    stream += f;
-    len -= f;
+  if( len <= 0 || !stream ) return;
+  /* SDL promises writable len-byte storage. A malformed frame request must
+     neither consume queued PCM nor leave stale bytes in that storage. */
+  if( !bytes_per_frame || len % bytes_per_frame ) {
+    memset( stream, 0, len );
+    return;
   }
+
+  delivered = pcm_fifo_read( &sound_fifo, bytes_per_frame, stream,
+                             len / bytes_per_frame );
+  if( delivered < 0 ) delivered = 0;
+  delivered *= bytes_per_frame;
+  memset( stream + delivered, 0, len - delivered );
 }

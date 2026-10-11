@@ -103,19 +103,19 @@ jobs:
       verify_ui: "win32"
       verify_audio: "directsound"
 
-  # SDL1 UI+sound
-  build-sdl-ui-sdl-sound:
-    name: "Fuse SDL1 (UI + sound)"
+  # SDL2 UI+sound
+  build-sdl2-ui-sdl2-sound:
+    name: "Fuse SDL2 (UI + sound)"
     needs: [libspectrum-windows]
     uses: ./.github/workflows/test_release_windows_sub.yml
     with:
       reason: ${{ inputs.reason }}
-      key: "sdl1-ui-sdl1-sound"
-      dependencies: "mingw64-i686-SDL"
-      configure_params: "--without-win32 --with-sdl --disable-sdl2 --with-audio-driver=sdl"
-      verify_ui: "sdl"
+      key: "sdl2-ui-sdl2-sound"
+      dependencies: "mingw64-i686-SDL2"
+      configure_params: "--without-win32 --with-sdl --with-audio-driver=sdl"
+      verify_ui: "sdl2"
       verify_audio: "sdl"
-      verify_other: "Using SDL 2: no"
+      verify_other: "Using SDL: 2"
 
   ########################################
   ### Create release, attach ZIP files ###
@@ -125,7 +125,7 @@ jobs:
     name: "Create Testing release"
     needs:
       - build-win32-ui-default
-      - build-sdl-ui-sdl-sound
+      - build-sdl2-ui-sdl2-sound
     runs-on: ubuntu-latest
     outputs:
       use_tag: ${{ steps.prep.outputs.use_tag }}
