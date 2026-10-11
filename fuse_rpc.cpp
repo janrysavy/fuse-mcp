@@ -563,6 +563,21 @@ static J dispatch(const std::string &method,const J &p) {
     for(auto&e:batch){if(e.second)keyboard_press(keyboard_key_name(e.first));else keyboard_release(keyboard_key_name(e.first));}revision++;return {{"accepted",batch.size()},{"state_revision",revision}};
   }
   if(method=="input.joystick") {
+    if(p.contains("device") || p.contains("mask")) {
+      fields(p,{"device","mask"});check_paused();
+      require(p.at("device").is_string() && p.at("device")=="kempston",
+              "only kempston mask input supported");
+      const unsigned mask=number(p.at("mask"),31,"Kempston mask must be 0..31");
+      require(settings_current.joy_kempston &&
+              settings_current.joystick_1_output==JOYSTICK_TYPE_KEMPSTON,
+              "enable Kempston and select joystick 1 output");
+      const unsigned bits[5]={2,1,8,4,16};
+      const joystick_button buttons[5]={JOYSTICK_BUTTON_LEFT,JOYSTICK_BUTTON_RIGHT,
+        JOYSTICK_BUTTON_UP,JOYSTICK_BUTTON_DOWN,JOYSTICK_BUTTON_FIRE};
+      for(unsigned i=0;i<5;i++)
+        require(joystick_press(0,buttons[i],(mask&bits[i])!=0),"Kempston input rejected");
+      revision++;return {{"device","kempston"},{"mask",mask},{"state_revision",revision}};
+    }
     fields(p,{"joystick","events"});check_paused();
     auto which=number(p.at("joystick"),1,"joystick must be 0 or 1");
     int output=which ? settings_current.joystick_2_output : settings_current.joystick_1_output;
