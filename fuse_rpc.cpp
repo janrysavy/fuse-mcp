@@ -90,6 +90,9 @@ static uint64_t trace_max_units=1000000, trace_max_records=100000, trace_max_wri
 struct Request {
   std::string line, response;
   bool done = false;
+  // Written by the guest owner, published with done under mutex. A positive
+  // value asks the socket thread to await a host completion notification.
+  unsigned wait_timeout_ms = 0;
   std::mutex mutex;
   std::condition_variable cv;
 };
@@ -98,6 +101,11 @@ static std::condition_variable queue_ready;
 static std::deque<std::shared_ptr<Request>> requests;
 static std::atomic<bool> pending{false};
 static std::atomic<unsigned> client_count{0};
+// Only an event generation crosses threads; all guest/result reads stay on the
+// Fuse owner. The producer holds the waiter mutex to prevent lost wakeups.
+static std::mutex operation_mutex;
+static std::condition_variable operation_ready;
+static std::atomic<uint64_t> operation_generation{0};
 struct Invalid : std::runtime_error { using std::runtime_error::runtime_error; };
 static void require(bool ok, const char *message) { if (!ok) throw Invalid(message); }
 static uint64_t number(const J &v, uint64_t maximum, const char *message) {
@@ -251,6 +259,8 @@ static void stop(const std::string &kind, J detail=J::object()) {
     completed.push_back({{"operation_id",active_op},{"state","stopped"},{"running",false},{"paused",true},{"stop_reason",last_stop}});
     if(completed.size()>64) completed.erase(completed.begin()); active_op=0;
   }
+  {std::lock_guard<std::mutex> lock(operation_mutex);operation_generation.fetch_add(1,std::memory_order_relaxed);}
+  operation_ready.notify_all();
 }
 static J start(bool stepping) {
   auto r=registers();active_op=next_op++;paused=false;revision++;
@@ -321,7 +331,7 @@ static bool matches(const J &p) {
   auto a=p.at("address").get<unsigned>();
   return p.at("kind")=="execution" ? z80.pc.w==a : read(a,1)[0]==p.at("value").get<unsigned>();
 }
-static J dispatch(const std::string &method,const J &p) {
+static J dispatch(const std::string &method,const J &p,unsigned *wait_timeout_ms) {
   if(method=="coverage.detail.start" || method=="coverage.detail.stop" ||
      method=="coverage.detail.reset" || method=="coverage.detail.status" || method=="coverage.detail.read") {
     if(method=="coverage.detail.start") fields(p,{"reset","capacity"});
@@ -545,8 +555,12 @@ static J dispatch(const std::string &method,const J &p) {
     auto r=start(step);if(until){predicate=p.at("predicate");deadline=time_ns()+budget;}return r;
   }
   if(method=="execution.wait") {
-    fields(p,{"operation_id","timeout_ms"});auto id=number(p.at("operation_id"),UINT64_MAX,"invalid operation ID");number(p.value("timeout_ms",J(0)),60000,"invalid timeout");
-    if(id==active_op && id)return {{"operation_id",id},{"state","running"},{"running",true},{"paused",false}};
+    fields(p,{"operation_id","timeout_ms"});auto id=number(p.at("operation_id"),UINT64_MAX,"invalid operation ID");
+    auto timeout=number(p.value("timeout_ms",J(0)),60000,"invalid timeout");
+    if(id==active_op && id){
+      if(wait_timeout_ms)*wait_timeout_ms=unsigned(timeout);
+      return {{"operation_id",id},{"state","running"},{"running",true},{"paused",false}};
+    }
     for(auto &r:completed)if(r.at("operation_id")==id)return r;
     throw Invalid("unknown or expired operation ID");
   }
@@ -636,7 +650,7 @@ static J dispatch(const std::string &method,const J &p) {
 #endif
   throw std::out_of_range("method not found");
 }
-static std::string handle(const std::string &line) {
+static std::string handle(const std::string &line,unsigned *wait_timeout_ms) {
   J id=nullptr, message;bool notification=false;
   auto error=[&](int code,const std::string&why){return J{{"jsonrpc","2.0"},{"id",id},{"error",{{"code",code},{"message",why}}}}.dump()+"\n";};
   try {message=J::parse(line);}catch(...){return error(-32700,"Parse error");}
@@ -644,7 +658,7 @@ static std::string handle(const std::string &line) {
   if(message.contains("id")){id=message["id"];if(!(id.is_null()||id.is_string()||id.is_number_integer())){id=nullptr;return error(-32600,"Invalid ID");}}
   else notification=true;
   std::string result;
-  try {auto value=dispatch(message["method"],message.value("params",J::object()));result=J{{"jsonrpc","2.0"},{"id",id},{"result",value}}.dump()+"\n";}
+  try {auto value=dispatch(message["method"],message.value("params",J::object()),notification?nullptr:wait_timeout_ms);result=J{{"jsonrpc","2.0"},{"id",id},{"result",value}}.dump()+"\n";}
   catch(const Invalid&e){result=error(-32602,e.what());}
   catch(const J::exception&e){result=error(-32602,"Missing or invalid parameter");}
   catch(const std::out_of_range&e){result=error(-32601,e.what());}
@@ -655,14 +669,31 @@ static void client(SOCKET socket) {
   struct ReleaseSlot { ~ReleaseSlot(){client_count--;} } release_slot;
   DWORD timeout=60000;setsockopt(socket,SOL_SOCKET,SO_RCVTIMEO,reinterpret_cast<const char*>(&timeout),sizeof timeout);
   setsockopt(socket,SOL_SOCKET,SO_SNDTIMEO,reinterpret_cast<const char*>(&timeout),sizeof timeout);
+  auto issue=[](const std::shared_ptr<Request> &request){
+    {std::lock_guard<std::mutex> lock(queue_mutex);if(requests.size()>=64)return false;requests.push_back(request);pending=true;}
+    queue_ready.notify_one();
+    std::unique_lock<std::mutex> lock(request->mutex);request->cv.wait(lock,[&]{return request->done;});
+    return true;
+  };
   std::string buffer;char chunk[8192];
   for(;;) {
     int count=recv(socket,chunk,sizeof chunk,0);if(count<=0)break;buffer.append(chunk,count);
     for(;;){auto end=buffer.find('\n');if(end==std::string::npos)break;if(end>1048576){closesocket(socket);return;}
       auto request=std::make_shared<Request>();request->line=buffer.substr(0,end);buffer.erase(0,end+1);
-      {std::lock_guard<std::mutex> lock(queue_mutex);if(requests.size()>=64){closesocket(socket);return;}requests.push_back(request);pending=true;}
-      queue_ready.notify_one();
-      std::unique_lock<std::mutex> lock(request->mutex);request->cv.wait(lock,[&]{return request->done;});
+      auto generation=operation_generation.load(std::memory_order_relaxed);
+      if(!issue(request)){closesocket(socket);return;}
+      if(request->wait_timeout_ms){
+        // Never block the guest owner while awaiting completion. A stop that
+        // races the initial query is detected by its generation, even if its
+        // notification arrived before this thread started waiting.
+        {std::unique_lock<std::mutex> lock(operation_mutex);
+          operation_ready.wait_for(lock,std::chrono::milliseconds(request->wait_timeout_ms),
+            [&]{return operation_generation.load(std::memory_order_relaxed)!=generation;});}
+        // Requery on the owner after either wake or timeout. A timeout does not
+        // pause/resume the guest and no guest state is read on the socket thread.
+        auto result=std::make_shared<Request>();result->line=request->line;
+        if(!issue(result)){closesocket(socket);return;}request=std::move(result);
+      }
       size_t offset=0;while(offset<request->response.size()){int n=send(socket,request->response.data()+offset,int(request->response.size()-offset),0);if(n<=0){closesocket(socket);return;}offset+=n;}
     }if(buffer.size()>1048576)break;
   }closesocket(socket);
@@ -700,7 +731,7 @@ extern "C" int pyro_rpc_boundary() {
       for(int i=0;i<16;i++) {
         std::shared_ptr<Request> request;
         {std::lock_guard<std::mutex> lock(queue_mutex);if(requests.empty()){pending=false;break;}request=requests.front();requests.pop_front();}
-        auto result=handle(request->line);
+        auto result=handle(request->line,&request->wait_timeout_ms);
         {std::lock_guard<std::mutex> lock(request->mutex);request->response=std::move(result);request->done=true;}request->cv.notify_one();
       }
     }
