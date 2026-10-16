@@ -184,6 +184,10 @@ sub cpir_cpdr ($) {
 	  contend_read_no_mreq( HL, 1 );
 	  PC-=2;
 	  z80.memptr.w = PC+1;
+	  /* Repeating block instructions expose PC.13/PC.11 in F5/F3.
+	     The terminal iteration retains the ordinary data-derived flags. */
+	  F = ( F & ~( FLAG_3 | FLAG_5 ) ) | ( ( PC >> 8 ) & ( FLAG_3 | FLAG_5 ) );
+	  Q = F;
 	} else {
 	  z80.memptr.w$modifier;
 	}
@@ -338,6 +342,9 @@ sub ldir_lddr ($) {
 	  contend_write_no_mreq( DE, 1 );
 	  PC-=2;
 	  z80.memptr.w = PC+1;
+	  /* Preserve the repeat iteration's flag state if an IRQ observes it. */
+	  F = ( F & ~( FLAG_3 | FLAG_5 ) ) | ( ( PC >> 8 ) & ( FLAG_3 | FLAG_5 ) );
+	  Q = F;
 	}
         HL$modifier; DE$modifier;
       }
