@@ -65,6 +65,12 @@ def run(executable, out, detailed, paged=False):
         process = subprocess.Popen(command, cwd=out, env=env, stdout=log, stderr=log,
                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         try:
+            if paged:
+                # The present RPC contract deliberately supports48K only.
+                # Preserve that rejection; do not claim dynamic paging proof.
+                code = process.wait(timeout=15)
+                assert code != 0 and 'RPC currently requires --machine 48' in (out/'emulator.log').read_text()
+                return dict(observations=[dict(name='unsupported-128k-rpc',exit_code=code)],timings=[])
             deadline = time.monotonic() + 15
             while e is None:
                 try:
@@ -105,13 +111,6 @@ def run(executable, out, detailed, paged=False):
 
             mem = lambda address, value: dict(kind='memory', address=address, value=value)
             pc = lambda address: dict(kind='execution', address=address)
-            if paged:
-                until('initial-bank-zero', mem(0xc000,0), 1, 'predicate')
-                until('page-in-bank-one', mem(0xc000,1), 1000000, 'predicate')
-                assert e.call('state.get')['general']['pc'] == 0x8007
-                until('page-back-bank-zero', mem(0xc000,0), 1000000, 'predicate')
-                assert e.call('state.get')['general']['pc'] == 0x800b
-                return dict(observations=observations,timings=timings)
             until('initial-execution-match', pc(0x8000), 1, 'predicate')
             until('initial-memory-match', mem(0x9000, 0), 1, 'predicate')
             # The first INC takes longer than 1 ns; predicate wins over timeout.
