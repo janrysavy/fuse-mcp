@@ -71,6 +71,14 @@ static uint64_t revision = 1, next_op = 1, next_bp = 1, active_op = 0;
 static uint64_t instructions = 0, step_target = 0, deadline = 0;
 static int exempt_pc = -1;
 static J predicate = nullptr, breakpoints = J::array(), completed = J::array();
+enum class PredicateKind { None, Execution, Memory };
+struct CompiledPredicate {
+  PredicateKind kind = PredicateKind::None;
+  unsigned address = 0, value = 0;
+};
+// CPU-owner state. Keep the JSON for replies, but decode invariant fields once.
+// Retain addresses rather than page pointers: guest paging may change mid-run.
+static CompiledPredicate compiled_predicate;
 static J last_stop = {{"kind", "startup"}};
 struct TraceInstruction {
   uint64_t clock, end_clock;
@@ -163,13 +171,16 @@ static std::vector<unsigned char> unb64(const J &value) {
   }
   require(b64(v)==s,"noncanonical base64");return v;
 }
+static unsigned char peek_byte(unsigned address) {
+  auto &page=memory_map_read[address>>MEMORY_PAGE_SIZE_LOGARITHM];
+  require(page.page && (page.source==memory_source_rom || page.source==memory_source_ram),"unmapped or peripheral memory refused");
+  return page.page[address&MEMORY_PAGE_SIZE_MASK];
+}
 static std::vector<unsigned char> read(unsigned address,unsigned length) {
   require(length>0 && address<=65535 && length<=65536-address,"memory range outside 64K");
   std::vector<unsigned char> v; v.reserve(length);
   for(unsigned a=address;a<address+length;a++) {
-    auto &page=memory_map_read[a>>MEMORY_PAGE_SIZE_LOGARITHM];
-    require(page.page && (page.source==memory_source_rom || page.source==memory_source_ram),"unmapped or peripheral memory refused");
-    v.push_back(page.page[a&MEMORY_PAGE_SIZE_MASK]);
+    v.push_back(peek_byte(a));
   }return v;
 }
 static J descriptor(unsigned a,unsigned n) {
@@ -253,7 +264,7 @@ static J registers() {
 static void check_paused(){require(paused,"machine must be paused");}
 static void guard_revision(const J&p){require(p.contains("expected_state_revision") && number(p.at("expected_state_revision"),UINT64_MAX,"invalid revision")==revision,"stale or missing expected_state_revision");}
 static void stop(const std::string &kind, J detail=J::object()) {
-  paused=true;step_target=deadline=0;predicate=nullptr;revision++;
+  paused=true;step_target=deadline=0;predicate=nullptr;compiled_predicate={};revision++;
   detail["kind"]=kind;detail["registers"]=registers();last_stop=detail;
   if(active_op) {
     completed.push_back({{"operation_id",active_op},{"state","stopped"},{"running",false},{"paused",true},{"stop_reason",last_stop}});
@@ -320,16 +331,15 @@ static void set_register(const std::string &key,unsigned v) {
   else if(key=="i")z80.i=v;else if(key=="r"){z80.r=v&127;z80.r7=v&128;}
   else if(key=="iff1")z80.iff1=v;else if(key=="iff2")z80.iff2=v;else if(key=="im")z80.im=v;
 }
-static void validate_predicate(const J&p) {
+static CompiledPredicate compile_predicate(const J&p) {
   require(p.is_object() && p.contains("kind") && p.at("kind").is_string(),"predicate needs kind");
   auto kind=p.at("kind").get<std::string>();
-  if(kind=="execution"){fields(p,{"kind","address"});number(p.at("address"),65535,"invalid PC address");}
-  else if(kind=="memory"){fields(p,{"kind","address","value"});number(p.at("address"),65535,"invalid memory address");number(p.at("value"),255,"invalid byte");}
+  if(kind=="execution"){fields(p,{"kind","address"});return {PredicateKind::Execution,unsigned(number(p.at("address"),65535,"invalid PC address")),0};}
+  else if(kind=="memory"){fields(p,{"kind","address","value"});auto address=number(p.at("address"),65535,"invalid memory address");auto value=number(p.at("value"),255,"invalid byte");return {PredicateKind::Memory,unsigned(address),unsigned(value)};}
   else throw Invalid("unsupported predicate kind");
 }
-static bool matches(const J &p) {
-  auto a=p.at("address").get<unsigned>();
-  return p.at("kind")=="execution" ? z80.pc.w==a : read(a,1)[0]==p.at("value").get<unsigned>();
+static bool matches(const CompiledPredicate &p) {
+  return p.kind==PredicateKind::Execution ? z80.pc.w==p.address : peek_byte(p.address)==p.value;
 }
 static J dispatch(const std::string &method,const J &p,unsigned *wait_timeout_ms) {
   if(method=="coverage.detail.start" || method=="coverage.detail.stop" ||
@@ -546,13 +556,14 @@ static J dispatch(const std::string &method,const J &p,unsigned *wait_timeout_ms
   if(method=="execution.pause"){fields(p,{});if(!paused)stop("pause");auto r=registers();r["paused"]=true;r["stop_reason"]=last_stop;return r;}
   if(method=="execution.continue"||method=="execution.go"||method=="execution.step"||method=="execution.run_until") {
     check_paused();bool step=method=="execution.step", until=method=="execution.run_until";
+    CompiledPredicate next_predicate;
     if(step){fields(p,{"mode"});require(p.value("mode",J("into"))=="into","only step into supported");}
-    else if(until){fields(p,{"predicate","max_emulated_ns"});validate_predicate(p.at("predicate"));}
+    else if(until){fields(p,{"predicate","max_emulated_ns"});next_predicate=compile_predicate(p.at("predicate"));}
     else fields(p,{});
     uint64_t budget=until?number(p.value("max_emulated_ns",J(1000000000ULL)),60000000000ULL,"invalid emulation budget"):0;
     require(!until||budget>0,"budget must be positive");
     if(step || last_stop.value("kind",std::string())=="breakpoint")exempt_pc=z80.pc.w;
-    auto r=start(step);if(until){predicate=p.at("predicate");deadline=time_ns()+budget;}return r;
+    auto r=start(step);if(until){predicate=p.at("predicate");compiled_predicate=next_predicate;deadline=time_ns()+budget;}return r;
   }
   if(method=="execution.wait") {
     fields(p,{"operation_id","timeout_ms"});auto id=number(p.at("operation_id"),UINT64_MAX,"invalid operation ID");
@@ -740,7 +751,7 @@ extern "C" int pyro_rpc_boundary() {
         pyro_rpc_trace_enabled=0;trace_end_clock=clock_value();stop("trace_limit",trace_status());
       }
       else if(step_target && instructions>=step_target)stop("step");
-      else if(!predicate.is_null() && matches(predicate))stop("predicate",{{"predicate",predicate}});
+      else if(compiled_predicate.kind!=PredicateKind::None && matches(compiled_predicate))stop("predicate",{{"predicate",predicate}});
       else if(deadline && time_ns()>=deadline)stop("timeout");
       else if(exempt_pc!=z80.pc.w) {
         for(size_t i=0;i<breakpoints.size();i++)if(breakpoints[i]["address"]==z80.pc.w){auto bp=breakpoints[i];if(bp["once"].get<bool>())breakpoints.erase(breakpoints.begin()+i);stop("breakpoint",{{"breakpoint_id",bp["breakpoint_id"]},{"address",z80.pc.w}});break;}
