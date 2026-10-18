@@ -31,7 +31,7 @@ def cpu_seconds(process):
     return (values[2].value + values[3].value) / 10_000_000
 
 
-def run(executable, out, detailed):
+def run(executable, out, detailed, paged=False):
     out.mkdir(exist_ok=False)
     header = bytearray(30)
     header[4:10] = bytes.fromhex('0090008000ff')
@@ -39,12 +39,24 @@ def run(executable, out, detailed):
     ram = bytearray(49152)
     ram[16384:16392] = bytes.fromhex('3420fd23342b18f8')
     snapshot = out / 'counter.z80'
-    snapshot.write_bytes(header + ram)
+    if paged:
+        # Version2 header,128K model, eight uncompressed16K RAM pages.
+        # Page2 contains code; page0/1 expose different bytes at C000.
+        header[6:8] = b'\0\0'
+        extra = bytearray(23)
+        extra[:4] = bytes.fromhex('00800310')
+        pages = [bytearray(16384) for _ in range(8)]
+        pages[1][0] = 1
+        pages[2][:12] = bytes.fromhex('01fd7f3e11ed793e10ed7976')
+        snapshot.write_bytes(header+b'\x17\0'+extra+b''.join(
+            b'\xff\xff'+bytes([n+3])+page for n,page in enumerate(pages)))
+    else:
+        snapshot.write_bytes(header + ram)
     with socket.socket() as reservation:
         reservation.bind(('127.0.0.1', 0))
         port = reservation.getsockname()[1]
     env = dict(os.environ, USERPROFILE=str(out), TEMP=str(out), TMP=str(out))
-    command = [str(executable), '--machine', '48', '--no-sound',
+    command = [str(executable), '--machine', '128' if paged else '48', '--no-sound',
                '--no-autosave-settings', '--no-confirm-actions', '--speed', '10000',
                '--rpc-port', str(port), str(snapshot)]
     e = None
@@ -93,6 +105,13 @@ def run(executable, out, detailed):
 
             mem = lambda address, value: dict(kind='memory', address=address, value=value)
             pc = lambda address: dict(kind='execution', address=address)
+            if paged:
+                until('initial-bank-zero', mem(0xc000,0), 1, 'predicate')
+                until('page-in-bank-one', mem(0xc000,1), 1000000, 'predicate')
+                assert e.call('state.get')['general']['pc'] == 0x8007
+                until('page-back-bank-zero', mem(0xc000,0), 1000000, 'predicate')
+                assert e.call('state.get')['general']['pc'] == 0x800b
+                return dict(observations=observations,timings=timings)
             until('initial-execution-match', pc(0x8000), 1, 'predicate')
             until('initial-memory-match', mem(0x9000, 0), 1, 'predicate')
             # The first INC takes longer than 1 ns; predicate wins over timeout.
@@ -146,12 +165,12 @@ def main():
                   executables={k:hashlib.sha256(v.read_bytes()).hexdigest()
                                for k,v in [('baseline',args.baseline),('candidate',args.candidate)]}, runs=[])
     try:
-        for detailed in (False, True):
+        for detailed, paged in ((False,False),(True,False),(True,True)):
             pair = {}
             for name, executable in [('baseline', args.baseline), ('candidate', args.candidate)]:
-                result = run(executable.resolve(), out/(name+'-'+str(detailed)), detailed)
+                result = run(executable.resolve(), out/(name+'-'+str(detailed)+'-'+str(paged)), detailed,paged)
                 pair[name] = result
-                report['runs'].append(dict(name=name, detailed=detailed, **result))
+                report['runs'].append(dict(name=name, detailed=detailed, paged=paged, **result))
             assert pair['baseline']['observations'] == pair['candidate']['observations'], 'Runtime behavior differs'
         report['passed'] = True
     except Exception as error:
